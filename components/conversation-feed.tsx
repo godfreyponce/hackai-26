@@ -58,16 +58,6 @@ export function ConversationFeed({
         ))}
       </div>
 
-      {/* Generate Plan Button */}
-      <div className="px-6 pb-4">
-        <button
-          className="w-full py-4 rounded-full bg-gradient-to-r from-purple to-teal text-foreground font-heading font-semibold text-lg flex items-center justify-center gap-2 transition-all duration-300 hover:opacity-90 hover:shadow-[0_0_20px_rgba(123,47,190,0.4)]"
-        >
-          Generate My Plan
-          <ArrowRight className="w-5 h-5" />
-        </button>
-      </div>
-
       {/* Input row */}
       <div className="p-5 border-t border-violet/10">
         <div className="flex items-center gap-4">

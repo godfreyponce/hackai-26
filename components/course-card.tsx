@@ -34,7 +34,7 @@ export function CourseCard({
       onMouseLeave={() => setShowTooltip(false)}
     >
       <div
-        className={`bg-[#141428]/70 rounded-2xl p-5 transition-all duration-300 border border-transparent group-hover:bg-[#1a1a3a]/80 group-hover:shadow-[0_0_30px_rgba(123,47,190,0.15)] ${
+        className={`bg-[#141428]/70 rounded-md p-5 transition-all duration-300 border border-transparent group-hover:bg-[#1a1a3a]/80 group-hover:shadow-[0_0_30px_rgba(123,47,190,0.15)] ${
           isCompleted ? "border-green-500/20" : ""
         }`}
       >
@@ -46,12 +46,15 @@ export function CourseCard({
         )}
 
         {/* Course code */}
-        <p className="font-[var(--font-heading)] font-bold text-teal text-sm">
+        <p className="font-[var(--font-heading)] font-semibold text-teal text-sm">
           {code}
         </p>
 
         {/* Course title */}
-        <h3 className="font-[var(--font-heading)] font-semibold text-foreground mt-1 text-base leading-tight">
+        <h3 
+          className="font-[var(--font-heading)] font-semibold text-foreground mt-1 text-base leading-tight"
+          style={{ fontFamily: "'Figtree', sans-serif" }}
+        >
           {title}
         </h3>
 
@@ -72,7 +75,7 @@ export function CourseCard({
       {/* Tooltip */}
       {showTooltip && !isCompleted && (
         <div className="absolute left-0 right-0 -bottom-2 translate-y-full z-20 px-1">
-          <div className="bg-[#1a1a3a]/95 backdrop-blur-xl border border-violet/20 rounded-xl p-4 shadow-[0_0_30px_rgba(123,47,190,0.1)]">
+          <div className="bg-[#1a1a3a]/95 backdrop-blur-xl border border-violet/20 rounded-md p-4 shadow-[0_0_30px_rgba(123,47,190,0.1)]">
             <p className="text-xs text-muted-foreground leading-relaxed">
               <span className="text-teal font-medium">Why this course:</span>{" "}
               {whyText}

@@ -38,7 +38,6 @@
 
 @theme inline {
   --font-sans: 'DM Sans', 'DM Sans Fallback', sans-serif;
-  --font-heading: 'Space Grotesk', 'Space Grotesk Fallback', sans-serif;
   --font-mono: 'Geist Mono', 'Geist Mono Fallback';
   
   --color-purple: var(--purple);
@@ -89,6 +88,13 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Figtree', sans-serif;
+    font-weight: 600;
+  }
+  h1, h2, h3 {
+    letter-spacing: -0.02em;
   }
 }
 

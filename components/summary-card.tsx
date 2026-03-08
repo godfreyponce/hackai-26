@@ -4,7 +4,7 @@ import { Play, Download } from "lucide-react";
 
 export function SummaryCard() {
   return (
-    <div className="relative bg-[#141428]/70 backdrop-blur-xl border-l-4 border-purple rounded-2xl p-8 shadow-[0_0_40px_rgba(123,47,190,0.1)]">
+    <div className="relative bg-[#141428]/70 backdrop-blur-xl border-l-4 border-purple rounded-md p-8 shadow-[0_0_40px_rgba(123,47,190,0.1)]">
       {/* Export button - top right */}
       <button className="absolute top-4 right-4 px-4 py-2 rounded-lg bg-orange text-foreground font-[var(--font-heading)] font-semibold text-sm flex items-center gap-2 transition-all duration-300 hover:opacity-90 hover:shadow-[0_0_15px_rgba(232,119,34,0.4)]">
         <Download className="w-4 h-4" />

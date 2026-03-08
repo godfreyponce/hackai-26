@@ -81,7 +81,7 @@ export function UploadBox({ onFileUploaded }: UploadBoxProps) {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         className={cn(
-          "relative rounded-2xl border border-transparent p-10 transition-all duration-300 cursor-pointer group",
+          "relative rounded-2xl border-2 border-dashed border-[#7B2FBE] p-10 transition-all duration-300 cursor-pointer group",
           "bg-[#141428]/80 backdrop-blur-md",
           isDragOver && "border-teal/50 bg-teal/5 scale-[1.02]",
           !isDragOver && !isComplete && "hover:bg-[#1a1a3a]/80 hover:shadow-[0_0_40px_rgba(123,47,190,0.15)]",
