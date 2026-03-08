@@ -21,7 +21,8 @@ export default function SessionPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [showPrevious, setShowPrevious] = useState(false);
-  const [targetSemester, setTargetSemester] = useState("Fall 2026");
+  const [targetSemester, setTargetSemester] = useState("");
+  const transcriptData = useRef<any>(null);
   
   // Previous semesters (expandable)
   const [previousSemesters, setPreviousSemesters] = useState<Record<string, Course[]>>({});
@@ -36,7 +37,7 @@ export default function SessionPage() {
       isInProgress: true,
     },
     recommended: {
-      title: "Recommended for Fall 2026",
+      title: "Recommended Courses",
       credits: 0,
       courses: [],
     },
@@ -115,8 +116,8 @@ export default function SessionPage() {
         // Set previous semesters
         setPreviousSemesters(completedBySemester);
 
-        // Fetch semester-sequenced recommendations from our verified degree plan
-        fetchRecommendations(t);
+        // Save transcript for later when user picks a semester
+        transcriptData.current = t;
       } catch {}
     }
   }, []);
@@ -289,17 +290,25 @@ export default function SessionPage() {
   }, []);
 
   // Detect semester from user text (e.g. "Fall 2026", "Spring 2027")
+  // Also detect from AI response text
   const detectTargetSemester = (text: string) => {
     const matches = text.match(SEMESTER_REGEX);
     if (matches && matches.length > 0) {
-      // Capitalize properly: "fall 2026" -> "Fall 2026"
       const raw = matches[matches.length - 1];
       const parts = raw.trim().split(/\s+/);
       const season = parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
       let year = parts[1] || "";
       if (year.length === 2) year = "20" + year;
       const formatted = `${season} ${year}`;
-      setTargetSemester(formatted);
+      
+      // Only fetch if semester changed
+      if (formatted !== targetSemester) {
+        setTargetSemester(formatted);
+        // Fetch recommendations when user picks a semester
+        if (transcriptData.current) {
+          fetchRecommendations(transcriptData.current);
+        }
+      }
     }
   };
 
