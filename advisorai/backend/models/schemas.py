@@ -1,5 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
+from enum import Enum
 
 
 class Course(BaseModel):
@@ -37,8 +38,45 @@ class RecommendationResponse(BaseModel):
     reasoning: str
 
 
+class CompletedCourse(BaseModel):
+    """A single completed course from a student's transcript."""
+    course_code: str          # e.g. "CS 1337"
+    course_name: str          # e.g. "Computer Science I"
+    grade: str                # e.g. "A", "B+", "W", "CR"
+    credit_hours: float       # e.g. 3.0
+    semester: Optional[str] = None  # e.g. "2024 Fall"
+
+
+class UncertaintyType(str, Enum):
+    """Type of uncertainty in a recommendation."""
+    EPISTEMIC = "epistemic"    # Not enough data to be confident
+    ALEATORIC = "aleatoric"    # Genuinely ambiguous decision
+
+
 class TranscriptData(BaseModel):
-    """Parsed transcript data."""
-    courses: List[dict]
-    gpa: Optional[float] = None
+    """Fully parsed UTD unofficial transcript."""
+    student_name: str
+    student_id: Optional[str] = None
+    major: str
+    total_credit_hours: float
+    gpa: float
+    completed_courses: List[CompletedCourse]
+
+
+class CourseRecommendation(BaseModel):
+    """A single course recommendation with confidence and reasoning."""
+    course_code: str
+    course_name: str
+    reason: str
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    uncertainty_type: Optional[UncertaintyType] = None
+    professor_suggestion: Optional[str] = None
+    average_gpa: Optional[float] = None
+
+
+class SemesterPlan(BaseModel):
+    """Full semester plan returned to the student."""
+    recommendations: List[CourseRecommendation]
+    advisor_message: str
     total_credits: float
+    semester: Optional[str] = None

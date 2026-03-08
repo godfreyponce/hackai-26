@@ -4,6 +4,8 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Upload, FileText, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 interface UploadBoxProps {
   onFileUploaded: (uploaded: boolean) => void;
 }
@@ -14,24 +16,60 @@ export function UploadBox({ onFileUploaded }: UploadBoxProps) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const simulateUpload = useCallback((selectedFile: File) => {
+  const uploadToBackend = useCallback(async (selectedFile: File) => {
     setFile(selectedFile);
     setIsUploading(true);
     setUploadProgress(0);
-    
-    const interval = setInterval(() => {
+    setError(null);
+
+    // Start progress animation
+    const progressInterval = setInterval(() => {
       setUploadProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setIsUploading(false);
-          setIsComplete(true);
-          return 100;
+        if (prev >= 85) {
+          clearInterval(progressInterval);
+          return 85; // Hold at 85% until backend responds
         }
-        return prev + Math.random() * 15 + 5;
+        return prev + Math.random() * 10 + 3;
       });
     }, 150);
+
+    try {
+      // POST to backend /api/transcript
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      const res = await fetch(`${API_BASE}/api/transcript/`, {
+        method: "POST",
+        body: formData,
+      });
+
+      clearInterval(progressInterval);
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ detail: "Upload failed" }));
+        throw new Error(errData.detail || `Server error: ${res.status}`);
+      }
+
+      const transcriptData = await res.json();
+
+      // Store in sessionStorage for the plan page to use
+      sessionStorage.setItem("transcriptData", JSON.stringify(transcriptData));
+
+      // Complete!
+      setUploadProgress(100);
+      setIsUploading(false);
+      setIsComplete(true);
+    } catch (err: any) {
+      clearInterval(progressInterval);
+      setIsUploading(false);
+      setUploadProgress(0);
+      setFile(null);
+      setError(err.message || "Failed to upload transcript");
+      console.error("Upload error:", err);
+    }
   }, []);
 
   useEffect(() => {
@@ -46,10 +84,10 @@ export function UploadBox({ onFileUploaded }: UploadBoxProps) {
       setIsDragOver(false);
       const droppedFile = e.dataTransfer.files[0];
       if (droppedFile && droppedFile.type === "application/pdf") {
-        simulateUpload(droppedFile);
+        uploadToBackend(droppedFile);
       }
     },
-    [simulateUpload]
+    [uploadToBackend]
   );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -69,7 +107,7 @@ export function UploadBox({ onFileUploaded }: UploadBoxProps) {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (selectedFile && selectedFile.type === "application/pdf") {
-      simulateUpload(selectedFile);
+      uploadToBackend(selectedFile);
     }
   };
 
@@ -86,7 +124,8 @@ export function UploadBox({ onFileUploaded }: UploadBoxProps) {
           isDragOver && "border-teal/50 bg-teal/5 scale-[1.02]",
           !isDragOver && !isComplete && "hover:bg-[#1a1a3a]/80 hover:shadow-[0_0_40px_rgba(123,47,190,0.15)]",
           isComplete && "border-teal/30 bg-teal/5 cursor-default",
-          isUploading && "cursor-wait"
+          isUploading && "cursor-wait",
+          error && "border-red-500/50"
         )}
       >
         <input
@@ -98,7 +137,7 @@ export function UploadBox({ onFileUploaded }: UploadBoxProps) {
         />
 
         <div className="flex flex-col items-center gap-4 text-center">
-          {!file && !isUploading && !isComplete && (
+          {!file && !isUploading && !isComplete && !error && (
             <>
               <div className="relative">
                 <Upload className="w-12 h-12 text-muted-foreground group-hover:text-violet transition-colors" />
@@ -115,6 +154,19 @@ export function UploadBox({ onFileUploaded }: UploadBoxProps) {
             </>
           )}
 
+          {error && (
+            <div className="text-center">
+              <p className="text-red-400 font-medium mb-1">Upload failed</p>
+              <p className="text-red-300/70 text-sm mb-3">{error}</p>
+              <button
+                onClick={(e) => { e.stopPropagation(); setError(null); }}
+                className="text-sm text-violet hover:text-violet/80 underline"
+              >
+                Try again
+              </button>
+            </div>
+          )}
+
           {(isUploading || isComplete) && file && (
             <>
               <div className="flex items-center gap-3 text-left w-full">
@@ -129,8 +181,8 @@ export function UploadBox({ onFileUploaded }: UploadBoxProps) {
                   </p>
                   <p className="text-muted-foreground text-sm">
                     {isComplete
-                      ? "Upload complete"
-                      : `Uploading... ${Math.min(Math.round(uploadProgress), 100)}%`}
+                      ? "Transcript parsed successfully ✓"
+                      : `Analyzing transcript... ${Math.min(Math.round(uploadProgress), 100)}%`}
                   </p>
                 </div>
               </div>

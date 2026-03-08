@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { StepProgress } from "@/components/step-progress";
 import { AIAvatar } from "@/components/ai-avatar";
 import { ConversationFeed } from "@/components/conversation-feed";
 import { useRouter } from "next/navigation";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 interface Message {
   id: string;
@@ -28,9 +30,14 @@ export default function SessionPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [advisorStatus, setAdvisorStatus] = useState<"listening" | "speaking">("listening");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const answersRef = useRef<string[]>([]);
 
   const handleSend = useCallback(() => {
     if (!inputValue.trim()) return;
+
+    // Store student's answer
+    answersRef.current.push(inputValue.trim());
 
     // Add student message
     const studentMessage: Message = {
@@ -69,6 +76,57 @@ export default function SessionPage() {
     }
   }, [isRecording]);
 
+  const handleGeneratePlan = useCallback(async () => {
+    setIsGenerating(true);
+
+    try {
+      // Get the transcript file stored by upload-box
+      const storedFile = sessionStorage.getItem("uploadedFile");
+      const transcriptData = sessionStorage.getItem("transcriptData");
+      const answers = answersRef.current;
+      
+      // Build career goal from answers
+      const careerGoal = answers.length >= 3 
+        ? answers[2]  // "Are you more interested in..."
+        : answers.length > 0 
+          ? answers[answers.length - 1] 
+          : "";
+
+      // Store career goal and answers for the plan page
+      sessionStorage.setItem("careerGoal", careerGoal);
+      sessionStorage.setItem("sessionAnswers", JSON.stringify({
+        major: answers[0] || "",
+        goal: answers[1] || "",
+        interest: answers[2] || "",
+      }));
+
+      // If we have transcript data, call the recommend endpoint
+      if (transcriptData) {
+        const transcript = JSON.parse(transcriptData);
+        
+        const res = await fetch(`${API_BASE}/api/recommend/from-data`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transcript,
+            career_goal: careerGoal,
+          }),
+        });
+
+        if (res.ok) {
+          const plan = await res.json();
+          sessionStorage.setItem("semesterPlan", JSON.stringify(plan));
+        }
+      }
+
+      router.push("/plan");
+    } catch (err) {
+      console.error("Failed to generate plan:", err);
+      // Navigate anyway — plan page will show fallback data
+      router.push("/plan");
+    }
+  }, [router]);
+
   const isComplete = currentStep === 3 && messages.filter((m) => !m.isAdvisor).length >= 3;
 
   return (
@@ -105,10 +163,15 @@ export default function SessionPage() {
         {/* Bottom CTA - always appears */}
         <div className="p-8 border-t border-violet/10">
           <button 
-            onClick={() => router.push('/plan')}
-            className="w-full py-4 rounded-full bg-[#7B2FBE] text-foreground font-[var(--font-heading)] font-semibold text-lg hover:bg-[#9B5DE5] transition-colors"
+            onClick={handleGeneratePlan}
+            disabled={isGenerating}
+            className={`w-full py-4 rounded-full bg-[#7B2FBE] text-foreground font-[var(--font-heading)] font-semibold text-lg transition-colors ${
+              isGenerating
+                ? "opacity-60 cursor-wait"
+                : "hover:bg-[#9B5DE5]"
+            }`}
           >
-            Generate My Plan →
+            {isGenerating ? "Generating your plan..." : "Generate My Plan →"}
           </button>
         </div>
       </div>

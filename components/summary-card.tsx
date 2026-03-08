@@ -2,7 +2,25 @@
 
 import { Play, Download } from "lucide-react";
 
-export function SummaryCard() {
+interface SummaryCardProps {
+  advisorMessage?: string;
+  studentName?: string;
+  completedCredits?: number;
+  major?: string;
+  gpa?: number;
+}
+
+export function SummaryCard({
+  advisorMessage,
+  studentName,
+  completedCredits,
+  major,
+  gpa,
+}: SummaryCardProps) {
+  const displayMessage = advisorMessage
+    ? advisorMessage.slice(0, 300) + (advisorMessage.length > 300 ? "..." : "")
+    : `Based on your transcript, you've completed ${completedCredits || 45} credits toward your CS degree. I recommend focusing on core upper-division requirements this year to stay on track for a Spring 2027 graduation.`;
+
   return (
     <div className="relative bg-[#141428]/70 backdrop-blur-xl border-l-4 border-purple rounded-md p-8 shadow-[0_0_40px_rgba(123,47,190,0.1)]">
       {/* Export button - top right */}
@@ -22,12 +40,7 @@ export function SummaryCard() {
 
         {/* Summary text */}
         <p className="text-foreground text-base leading-relaxed flex-1">
-          Based on your transcript, you&apos;ve completed{" "}
-          <span className="text-teal font-semibold">45 credits</span> toward
-          your CS degree. I recommend focusing on core upper-division
-          requirements this year to stay on track for a{" "}
-          <span className="text-teal font-semibold">Spring 2027</span>{" "}
-          graduation.
+          {displayMessage}
         </p>
 
         {/* Play button */}
@@ -35,6 +48,16 @@ export function SummaryCard() {
           <Play className="w-5 h-5 text-background ml-0.5" fill="currentColor" />
         </button>
       </div>
+
+      {/* Student info bar */}
+      {(studentName || gpa) && (
+        <div className="mt-4 flex gap-4 text-sm text-muted-foreground">
+          {studentName && <span>👤 {studentName}</span>}
+          {major && <span>🎓 {major}</span>}
+          {gpa && <span>📊 GPA: {gpa}</span>}
+          {completedCredits && <span>📚 {completedCredits} credits completed</span>}
+        </div>
+      )}
     </div>
   );
 }

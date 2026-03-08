@@ -1,37 +1,66 @@
-from fastapi import APIRouter, Query
-from typing import List, Optional
+"""
+Courses router — GET /api/courses
 
-from models.schemas import Course
-from services.nebula import NebulaClient
+Search and browse UTD course catalog from Nebula data.
+"""
+
+from fastapi import APIRouter, Query
+from typing import Optional
+
+from services.data_loader import get_course_store
 
 router = APIRouter()
-nebula = NebulaClient()
 
 
-@router.get("/", response_model=List[Course])
+@router.get("/")
 async def list_courses(
     q: Optional[str] = Query(None, description="Search query"),
-    department: Optional[str] = Query(None, description="Filter by department"),
-    level: Optional[int] = Query(None, description="Filter by course level"),
+    department: Optional[str] = Query(None, description="Filter by department (e.g., CS)"),
+    limit: int = Query(20, description="Max results"),
 ):
-    """List available courses with optional filters."""
-    courses = await nebula.get_courses(
-        query=q,
-        department=department,
-        level=level,
-    )
-    return courses
+    """Search and browse UTD courses."""
+    store = get_course_store()
+
+    if q:
+        results = store.search_courses(q, limit=limit)
+    elif department:
+        results = [
+            info for code, info in store.courses.items()
+            if code.startswith(department.upper())
+        ][:limit]
+    else:
+        results = list(store.courses.values())[:limit]
+
+    return [
+        {
+            "code": r.code,
+            "name": r.title,
+            "credits": r.credits,
+            "description": r.description[:200] if r.description else "",
+            "school": r.school,
+            "prerequisites": store.get_prerequisites(r.code),
+        }
+        for r in results
+    ]
 
 
-@router.get("/{course_id}", response_model=Course)
-async def get_course(course_id: str):
-    """Get details for a specific course."""
-    course = await nebula.get_course(course_id)
-    return course
+@router.get("/{course_code}")
+async def get_course(course_code: str):
+    """Get details for a specific course (e.g., CS+1337)."""
+    # URL-encode spaces as + in the path
+    code = course_code.replace("+", " ").upper()
+    store = get_course_store()
+    info = store.get_course(code)
 
+    if not info:
+        return {"error": f"Course {code} not found"}
 
-@router.get("/{course_id}/prerequisites")
-async def get_prerequisites(course_id: str):
-    """Get prerequisite tree for a course."""
-    prereqs = await nebula.get_prerequisites(course_id)
-    return prereqs
+    return {
+        "code": info.code,
+        "name": info.title,
+        "credits": info.credits,
+        "description": info.description,
+        "school": info.school,
+        "enrollment_reqs": info.enrollment_reqs,
+        "prerequisites": store.get_prerequisites(code),
+    }
