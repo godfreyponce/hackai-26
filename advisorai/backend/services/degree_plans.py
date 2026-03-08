@@ -313,7 +313,170 @@ SE_DEGREE_PLAN = {
 }
 
 
-# ─── Registry ─────────────────────────────────────────────────────
+# ─── EE Degree Plan (BS, 2025-2026) ───────────────────────────────
+
+EE_DEGREE_PLAN = {
+    "name": "Electrical Engineering",
+    "degree": "BS",
+    "total_hours": 128,
+    "categories": {
+        "first_year": {
+            "label": "First Year Requirements",
+            "hours": 2,
+            "courses": ["ECS 1100", "EE 1100"],
+            "notes": "First year only",
+        },
+        "major_prep": {
+            "label": "Major Preparatory Requirements",
+            "hours": 36,
+            "courses": [
+                "MATH 2413", "MATH 2414", "MATH 2415", "MATH 2420",
+                "PHYS 2325", "PHYS 2125", "PHYS 2326", "PHYS 2126",
+                "CS 1325", "ENGR 2300", "EE 1202", "EE 2310",
+                "CHEM 1311", "CHEM 1111"
+            ],
+            "alternatives": {
+                "MATH 2413": ["MATH 2417"],
+                "MATH 2414": ["MATH 2419"]
+            },
+        },
+        "major_core": {
+            "label": "Major Core Requirements",
+            "hours": 50,
+            "courses": [
+                "ENGR 3341", "EE 3201", "EE 2301", "EE 3300", 
+                "EE 3320", "EE 3310", "EE 3202", "EE 3311",
+                "EE 3302", "EE 3161", "ECS 2390", "EE 42XX",
+                "EE 4310", "EE 4370", "EE 4301", "EE 4388", "EE 4389"
+            ],
+        },
+        "technical_electives": {
+            "label": "Technical Electives",
+            "hours": 12,
+            "courses": [], 
+            "pattern": "EE 4XXX",
+            "count": 4,
+        },
+        "core_curriculum": {
+            "label": "State Core Curriculum",
+            "hours": 24,
+            "courses": [
+                "RHET 1302", "GOVT 2305", "GOVT 2306"
+            ],
+            "flexible_slots": [
+                {"area": "American History (060)", "count": 2},
+                {"area": "Language, Philosophy, Culture (040)", "count": 1},
+                {"area": "Creative Arts (050)", "count": 1},
+                {"area": "Social Behavioral Science (080)", "count": 1},
+            ],
+        },
+        "free_electives": {
+            "label": "Free Electives",
+            "hours": 9,
+            "courses": [],
+            "count": 3
+        },
+    },
+    
+    "prerequisite_chains": {
+        # Math & Physics 
+        "MATH 2414": ["MATH 2413"],
+        "MATH 2415": ["MATH 2414"],
+        "PHYS 2325": ["MATH 2413"],
+        "PHYS 2125": ["PHYS 2325"],
+        "MATH 2420": ["MATH 2415", "ENGR 2300"],
+        "PHYS 2326": ["PHYS 2325", "MATH 2414"],
+        "PHYS 2126": ["PHYS 2326"],
+        "ENGR 3341": ["MATH 2415"],
+        
+        # EE Foundations
+        "EE 1202": ["EE 1100"],
+        "EE 3201": ["RHET 1302", "EE 1202"],
+        "EE 2301": ["PHYS 2326", "MATH 2420"],
+        "EE 3300": ["MATH 2415", "ENGR 2300"],
+        "EE 3320": ["EE 2310"],
+        "EE 3310": ["PHYS 2326", "MATH 2420"],
+        
+        # Upper Level Core
+        "EE 3202": ["EE 3201"],
+        "EE 3311": ["EE 2301"],
+        "EE 3302": ["EE 3300"],
+        "ECS 2390": ["RHET 1302"],
+        "EE 42XX": ["EE 3202"],
+        "EE 4310": ["ENGR 2300", "EE 3302"],
+        "EE 4370": ["EE 3320"],
+        "EE 4301": ["PHYS 2326", "EE 2301", "EE 3300"],
+        
+        # Senior Design
+        "EE 4388": ["ECS 2390", "EE 3302", "EE 3161", "EE 3311", "EE 3320"],
+        "EE 4389": ["EE 4388"]
+    },
+    
+    "corequisites": {
+        "CS 1325": ["MATH 2413"],
+        "ENGR 2300": ["MATH 2413"],
+        "PHYS 2325": ["MATH 2414"],
+        "ENGR 3341": ["MATH 2420"],
+        "EE 3201": ["EE 3320", "EE 2301"],
+        "EE 3300": ["MATH 2420"],
+        "EE 3202": ["ECS 2390"]
+    },
+    
+    "critical_path": [
+        "MATH 2413", "MATH 2414", "MATH 2415", "ENGR 2300", 
+        "PHYS 2325", "MATH 2420", "PHYS 2326", "EE 3311"
+    ],
+    
+    # ── STRICT SEMESTER ORDERING MAP ──
+    "semester_sequence": {
+        # Semester 1
+        "MATH 2413": 1, "MATH 2417": 1,
+        "CS 1325": 1,
+        "ECS 1100": 1,
+        "EE 1100": 1,
+        
+        # Semester 2
+        "ENGR 2300": 2,
+        "MATH 2414": 2, "MATH 2419": 2,
+        "MATH 2415": 2,  
+        "PHYS 2325": 2, "PHYS 2125": 2,
+        "EE 1202": 2,
+        "EE 2310": 2,
+        
+        # Semester 3
+        "ENGR 3341": 3,
+        "MATH 2420": 3,
+        "PHYS 2326": 3, "PHYS 2126": 3,
+        
+        # Semester 4
+        "EE 3201": 4,
+        "EE 2301": 4,
+        "EE 3300": 4,
+        "EE 3320": 4,
+        "EE 3310": 4,
+        "CHEM 1311": 4, "CHEM 1111": 4,
+        
+        # Semester 5
+        "EE 3202": 5,
+        "EE 3311": 5,
+        "EE 3302": 5,
+        "EE 3161": 5,
+        "ECS 2390": 5,
+        
+        # Semester 6
+        "EE 42XX": 6,
+        "EE 4310": 6,
+        "EE 4370": 6,
+        
+        # Semester 7
+        "EE 4301": 7,
+        "EE 4388": 7,
+        
+        # Semester 8
+        "EE 4389": 8
+    }
+}
+
 
 DEGREE_PLANS = {
     "Computer Science": CS_DEGREE_PLAN,
@@ -325,6 +488,9 @@ DEGREE_PLANS = {
     "Software Engineering": SE_DEGREE_PLAN,
     "software engineering": SE_DEGREE_PLAN,
     "SE": SE_DEGREE_PLAN,
+    "Electrical Engineering": EE_DEGREE_PLAN,
+    "electrical engineering": EE_DEGREE_PLAN,
+    "EE": EE_DEGREE_PLAN,
 }
 
 
