@@ -41,7 +41,7 @@ export function AIAvatar({ isSpeaking, status }: AIAvatarProps) {
       {/* Labels */}
       <div className="flex flex-col items-center gap-2">
         <span className="font-[var(--font-heading)] text-xl font-semibold text-muted-foreground">
-          Nebula Advisor
+          Comet Advisor
         </span>
         <span
           className={`text-sm font-sans transition-colors duration-300 ${
