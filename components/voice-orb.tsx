@@ -54,12 +54,12 @@ export function VoiceOrb({
       
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
-        recognition.continuous = false; // STRICT SEQUENTIAL. NO CONTINUOUS LISTENING.
+        recognition.continuous = true; // Always running to prevent browser hardware lockups
         recognition.interimResults = true;
         recognition.lang = "en-US";
 
         recognition.onresult = (event: any) => {
-          // STRICT TURN TAKING: If not LISTENING, do absolutely nothing.
+          // STRICT TURN TAKING: If not LISTENING, do absolutely nothing. It physically ignores its own echo.
           if (orbState !== "LISTENING") return;
 
           let latestTranscript = "";
@@ -90,9 +90,9 @@ export function VoiceOrb({
         };
 
         recognition.onend = () => {
-          // If we are supposed to be LISTENING but the engine stopped (e.g., pause in continuous=false)
-          // we need to spin it back up so it keeps waiting for the user to finish their thought.
-          if (isComponentMounted.current && recognitionRef.current && orbState === "LISTENING") {
+          // Browsers sometimes organically drop continuous listeners after a minute of silence
+          // If we are still active (not IDLE), simply restart the engine cleanly in the background
+          if (isComponentMounted.current && recognitionRef.current && orbState !== "IDLE") {
             try { 
               recognitionRef.current.start(); 
             } catch {}
@@ -140,11 +140,6 @@ export function VoiceOrb({
   const playAudioResponse = async (text: string) => {
     try {
       setOrbState("SPEAKING");
-      
-      // Physically stop the mic from listening
-      if (recognitionRef.current) {
-         try { recognitionRef.current.abort(); } catch {}
-      }
 
       // The speak endpoint is a Next.js route, not the Python backend
       const audioRes = await fetch(`/api/speak`, {
@@ -166,10 +161,6 @@ export function VoiceOrb({
         if (isComponentMounted.current) {
           setOrbState("LISTENING");
           setAiText("");
-          // Turn mic back on for user's turn physically
-          if (recognitionRef.current) { 
-             try { recognitionRef.current.start(); } catch {} 
-          }
         }
       };
 
@@ -178,9 +169,6 @@ export function VoiceOrb({
         if (isComponentMounted.current) {
           setOrbState("LISTENING");
           setAiText("");
-          if (recognitionRef.current) { 
-             try { recognitionRef.current.start(); } catch {} 
-          }
         }
       };
 
@@ -189,7 +177,6 @@ export function VoiceOrb({
         if (isComponentMounted.current) {
           setOrbState("LISTENING");
           setAiText("");
-          if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
         }
       });
     } catch (e) {
@@ -198,10 +185,6 @@ export function VoiceOrb({
       if (typeof window !== "undefined" && window.speechSynthesis) {
         setOrbState("SPEAKING");
         
-        if (recognitionRef.current) {
-           try { recognitionRef.current.abort(); } catch {}
-        }
-        
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 1.05;
         
@@ -209,7 +192,6 @@ export function VoiceOrb({
           if (isComponentMounted.current) {
             setOrbState("LISTENING");
             setAiText("");
-            if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
           }
         };
         
@@ -217,7 +199,6 @@ export function VoiceOrb({
           if (isComponentMounted.current) {
             setOrbState("LISTENING");
             setAiText("");
-            if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
           }
         };
 
@@ -226,7 +207,6 @@ export function VoiceOrb({
       } else {
         setOrbState("LISTENING");
         setAiText("");
-        if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
       }
     }
   };
@@ -273,11 +253,7 @@ export function VoiceOrb({
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     if (!text.trim() || orbState !== "LISTENING") return;
 
-    // Transition to thinking, pause mic completely
-    if (recognitionRef.current) {
-      try { recognitionRef.current.abort(); } catch {}
-    }
-
+    // Transition to thinking, software-lock the mic via state
     setOrbState("THINKING");
     setInterimTranscript("");
     onUserSpeech(text); // Notify parent for target semester detection
