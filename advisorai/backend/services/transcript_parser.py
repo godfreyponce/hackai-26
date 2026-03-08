@@ -1,76 +1,20 @@
-import re
-from typing import List, Dict, Any
-from io import BytesIO
+# MOCK DATA for testing – teammate will replace with real UTD flowchart data
 
-# Optional: PDF parsing
-try:
-    import pypdf
-    HAS_PYPDF = True
-except ImportError:
-    HAS_PYPDF = False
-
-
-class TranscriptParser:
-    """Parse academic transcripts to extract course history."""
-
-    def parse(self, file_content: bytes, filename: str) -> Dict[str, Any]:
-        """Parse transcript file and extract course information."""
-        if filename.endswith(".pdf"):
-            return self.parse_pdf(file_content)
-        elif filename.endswith(".txt"):
-            return self.parse_text(file_content.decode("utf-8"))
-        else:
-            raise ValueError(f"Unsupported file format: {filename}")
-
-    def parse_pdf(self, content: bytes) -> Dict[str, Any]:
-        """Parse PDF transcript."""
-        if not HAS_PYPDF:
-            raise ImportError("pypdf is required for PDF parsing")
-
-        reader = pypdf.PdfReader(BytesIO(content))
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() + "\n"
-
-        return self.parse_text(text)
-
-    def parse_text(self, text: str) -> Dict[str, Any]:
-        """Parse plain text transcript."""
-        courses = []
-
-        # Common transcript patterns
-        # Example: "CS 1337    Computer Science I    A    3.00"
-        course_pattern = r"([A-Z]{2,4})\s*(\d{4})\s+(.+?)\s+([A-F][+-]?|W|P|CR)\s+(\d+\.?\d*)"
-
-        matches = re.findall(course_pattern, text)
-
-        for match in matches:
-            dept, number, name, grade, credits = match
-            courses.append({
-                "code": f"{dept} {number}",
-                "name": name.strip(),
-                "grade": grade,
-                "credits": float(credits),
-            })
-
-        # Extract GPA if present
-        gpa_pattern = r"(?:GPA|Grade Point Average)[:\s]+(\d+\.\d+)"
-        gpa_match = re.search(gpa_pattern, text, re.IGNORECASE)
-        gpa = float(gpa_match.group(1)) if gpa_match else None
-
-        return {
-            "courses": courses,
-            "gpa": gpa,
-            "total_credits": sum(c["credits"] for c in courses),
-        }
+# Hardcoded CS degree requirements (upper-division courses only for simplicity)
+DEGREE_REQUIREMENTS = {
+    "Computer Science": [
+        "CS 3341", "CS 3345", "CS 3354", "CS 3377",
+        "CS 4341", "CS 4347", "CS 4348", "CS 4349",
+        "CS 4365", "CS 4375", "CS 4386", "CS 4391",
+        "CS 4485",
+    ],
+    "Software Engineering": [
+        "CS 3341", "CS 3354", "CS 3375", "CS 4354",
+        "CS 4365", "CS 4375", "CS 4485",
+    ],
+}
 
 
-def extract_completed_courses(transcript_data: Dict[str, Any]) -> List[str]:
-    """Extract list of completed course codes from parsed transcript."""
-    passing_grades = {"A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "P", "CR"}
-
-    return [
-        course["code"]
-        for course in transcript_data.get("courses", [])
-        if course["grade"] in passing_grades
-    ]
+async def get_degree_requirements(major: str) -> list[str]:
+    """Returns hardcoded degree requirements. Teammate will expand with full flowcharts."""
+    return DEGREE_REQUIREMENTS.get(major, [])
