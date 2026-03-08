@@ -1,202 +1,255 @@
 """
-Gemini LLM integration for generating course reasoning and advisor chat.
-Author: Sual (recommendation engine scope)
+llm.py — Gemini API integration for natural language advisor explanations.
 
-Uses Google Generative AI SDK with gemini-2.0-flash model.
-API key loaded from environment variable GOOGLE_API_KEY.
-
-Design Decisions:
-- Reasoning generation returns structured JSON, parsed and merged with CourseRecommendation
-- Chat maintains conversation history for multi-turn interactions
-- Alternative paths are clearly labeled as AI suggestions
-- All prompts emphasize respecting student's stated interest above assumptions
+Uses the Gemini API to generate conversational explanations for course
+recommendations, tailored to the student's transcript and career goals.
 """
 
-import asyncio
-import json
-import logging
 import os
+import logging
+import json
+import asyncio
 from typing import Optional
 
+from dotenv import load_dotenv
+import httpx
 from google import genai
 from google.genai import types
 
-from models.schemas import (
-    StudentInput,
-    CourseRecommendation,
-    AlternativeCareerPath,
-)
+from models.schemas import CourseRecommendation, TranscriptData
 
 logger = logging.getLogger(__name__)
 
-# Initialize Gemini client
-# API key loaded from environment variable GOOGLE_API_KEY
-client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY", ""))
+# Load .env file from backend directory
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 MODEL = "gemini-2.5-flash"
 
+# Initialize google-genai client
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# ============================================================================
-# System Prompts
-# ============================================================================
+CHAT_SYSTEM_PROMPT = """You are Comet Advisor, a friendly, knowledgeable AI academic advisor at UT Dallas.
 
-REASONING_SYSTEM_PROMPT = """You are an academic advising AI. Your task is to generate concise, friendly, natural-language reasoning for each course recommendation based on the student's input.
-
-Rules:
-1. Weight the student's stated interest HIGHEST. Never override it with assumptions.
-2. If student_interest is null, label recommendations as general options and explain based on degree progress.
-3. For each course, explain: why it fits their goal, why the professor is recommended, and any prerequisite context.
-4. Keep each reasoning string under 3 sentences.
-5. Do NOT assume a career goal the student didn't provide.
-6. Return ONLY valid JSON. No markdown. No preamble. No explanation outside the JSON.
-
-Return this exact format:
-{
-  "courses": [
-    {
-      "course_id": "...",
-      "reasoning": "..."
-    }
-  ],
-  "alternative_career_paths": [
-    {
-      "career": "...",
-      "reasoning": "..."
-    }
-  ]
-}"""
-
-CHAT_SYSTEM_PROMPT = """You are a friendly UTD academic advisor. Ask clarifying questions about the student's goals, course load preferences, and career interests. Keep responses concise and conversational.
+Your role:
+- Help students plan their courses and understand degree requirements
+- Give warm, encouraging advice about academics
+- Answer questions about UTD courses, prerequisites, and degree plans
+- Help students think through career goals and how courses align
 
 Guidelines:
-- Be warm and supportive
-- Ask one question at a time
-- Reference UTD-specific programs when relevant
-- If the student seems unsure, offer 2-3 concrete options
-- Never make up course names or requirements
-- Encourage the student to explore their interests"""
+- Be concise (2-4 sentences per response)
+- Be conversational and natural — like talking to a friendly advisor
+- Never use markdown formatting (no **, ##, etc.) — your responses will be spoken aloud
+- Reference UTD-specific things when relevant (Comet Card, ECS building, etc.)
+- If you don't know something specific, say so honestly
+- Guide the conversation toward understanding what the student needs
 
-ALTERNATIVE_PATHS_SYSTEM_PROMPT = """You are a career advisor analyzing a student's completed coursework. Based on the courses they've taken, suggest 2-3 career paths that align well with their academic background.
-
-Guidelines:
-- Only suggest paths that genuinely connect to their completed courses
-- Be specific about which courses support each path
-- Keep reasoning to 2-3 sentences per path
-- Label these clearly as suggestions, not guarantees
-- Return ONLY valid JSON with no markdown or preamble
-
-Return format:
-{
-  "paths": [
-    {
-      "career": "...",
-      "reasoning": "..."
-    }
-  ]
-}"""
+CRITICAL RULES ABOUT COURSE DATA:
+- You have access to the OFFICIAL UTD course catalog data including descriptions, prerequisites, and credit hours.
+- When courses are provided in the context, that data IS the official catalog. Use it directly.
+- ONLY reference course codes and titles from the data provided to you. NEVER guess or make up course codes.
+- NEVER tell students to "check the UTD catalog" or "visit the website" — YOU have the catalog data.
+- If a course has prerequisites listed, state them directly. You have this information.
+- If you don't have data for a specific course, say "I don't have that course in my records" rather than redirecting to the catalog."""
 
 
-# ============================================================================
-# Main Functions
-# ============================================================================
-
-async def generate_reasoning(
-    student_input: StudentInput,
-    ranked_courses: list[dict],
-) -> list[CourseRecommendation]:
+async def generate_advisor_message(
+    recommendations: list[CourseRecommendation],
+    transcript: TranscriptData,
+    career_goal: Optional[str] = None,
+) -> str:
     """
-    Generate natural-language reasoning for course recommendations using Claude.
+    Generate a conversational advisor message explaining the recommendations.
 
-    Args:
-        student_input: The student's input data
-        ranked_courses: Top 15 pre-scored courses from recommender.py
-
-    Returns:
-        List of CourseRecommendation objects with reasoning populated
+    Uses Gemini to create a natural, encouraging explanation of why
+    these courses were selected and how they fit the student's path.
     """
-    # Build user message with student context and courses
-    user_message = json.dumps({
-        "student": {
-            "major": student_input.major,
-            "interest": student_input.student_interest,
-            "credit_limit": student_input.credit_limit,
-            "scheduling_preference": student_input.scheduling_preference,
-            "completed_courses": [
-                {"id": c.course_id, "name": c.course_name, "grade": c.grade}
-                for c in student_input.completed_courses
-            ],
-        },
-        "recommended_courses": ranked_courses,
-    }, indent=2)
+    # Build context for the prompt
+    completed_count = len(transcript.completed_courses)
+    ip_courses = [c for c in transcript.completed_courses if c.grade == "IP"]
+
+    rec_text = "\n".join([
+        f"- {r.course_code}: {r.course_name} "
+        f"(confidence: {r.confidence_score:.0%}"
+        f"{', uncertainty: ' + r.uncertainty_type.value if r.uncertainty_type else ''})"
+        f" — {r.reason}"
+        for r in recommendations
+    ])
+
+    total_rec_credits = sum(3 for _ in recommendations)  # Estimate
+
+    prompt = f"""You are AdvisorAI, a friendly and knowledgeable academic advisor at UT Dallas.
+A student has uploaded their transcript and is looking for course recommendations for next semester.
+
+STUDENT PROFILE:
+- Name: {transcript.student_name}
+- Major: {transcript.major}
+- GPA: {transcript.gpa}
+- Total Credit Hours: {transcript.total_credit_hours}
+- Courses Completed: {completed_count}
+- Currently Taking: {len(ip_courses)} courses
+{f'- Career Interest: {career_goal}' if career_goal else ''}
+
+RECOMMENDED COURSES FOR NEXT SEMESTER:
+{rec_text}
+
+Total recommended credits: ~{total_rec_credits}
+
+INSTRUCTIONS:
+1. Greet the student by name warmly
+2. Briefly acknowledge their academic progress (GPA, credits completed)
+3. Explain each recommended course in 1-2 sentences — WHY it's recommended, not just what it is
+4. If any courses have uncertainty, explain what that means in plain language:
+   - Epistemic uncertainty: "We don't have enough data to be fully confident about this one, but..."
+   - Aleatoric uncertainty: "This is a great choice, though there are other equally valid options..."
+5. Give one piece of overall semester advice
+6. Keep it conversational and encouraging — this should sound like talking to a real advisor
+7. Keep the total response under 250 words
+
+Do NOT use markdown formatting. Write in plain conversational text suitable for text-to-speech."""
 
     try:
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model=MODEL,
-            contents=user_message,
-            config=types.GenerateContentConfig(system_instruction=REASONING_SYSTEM_PROMPT),
-        )
-
-        # Extract text content
-        response_text = response.text
-
-        # Parse JSON response
-        parsed = _parse_llm_json(response_text)
-
-        if not parsed or "courses" not in parsed:
-            logger.error(f"Invalid LLM response format: {response_text[:200]}")
-            raise ValueError("LLM returned invalid response format")
-
-        # Build reasoning map
-        reasoning_map = {
-            item["course_id"]: item["reasoning"]
-            for item in parsed.get("courses", [])
-        }
-
-        # Build CourseRecommendation objects with reasoning
-        recommendations = []
-        for course_data in ranked_courses[:8]:  # Limit to top 8
-            course_id = course_data["course_id"]
-            reasoning = reasoning_map.get(course_id, "")
-
-            recommendations.append(
-                CourseRecommendation(
-                    course_id=course_id,
-                    course_name=course_data["course_name"],
-                    credits=course_data["credits"],
-                    score=course_data["score"],
-                    label="career-aligned" if course_data.get("interest_match") != "none" else "general-option",
-                    professor=None,  # Will be populated by router from original data
-                    reasoning=reasoning,
-                )
-            )
-
-        logger.info(f"Generated reasoning for {len(recommendations)} courses")
-        return recommendations
-
+        response = await call_gemini(prompt)
+        return response
     except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        raise
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse LLM response as JSON: {e}")
-        raise ValueError(f"LLM response was not valid JSON: {e}")
+        logger.error(f"Gemini API call failed: {e}")
+        # Fallback: generate a simple message without LLM
+        return _fallback_message(recommendations, transcript, career_goal)
+
+
+async def process_voice_query(
+    transcription: str,
+    transcript: Optional[TranscriptData] = None,
+) -> str:
+    """
+    Process a voice query from a student and generate an advisor response.
+    """
+    context = ""
+    if transcript:
+        context = f"""
+STUDENT CONTEXT:
+- Name: {transcript.student_name}
+- Major: {transcript.major}
+- GPA: {transcript.gpa}
+- Credits: {transcript.total_credit_hours}
+"""
+
+    prompt = f"""You are AdvisorAI, a friendly academic advisor at UT Dallas.
+A student has asked you the following question by voice:
+
+"{transcription}"
+{context}
+Provide a helpful, conversational response that:
+1. Directly addresses their question
+2. Offers relevant advice or information
+3. Suggests next steps if appropriate
+
+Keep the response concise (under 150 words) and natural for text-to-speech playback.
+Do NOT use markdown formatting."""
+
+    try:
+        response = await call_gemini(prompt)
+        return response
+    except Exception as e:
+        logger.error(f"Gemini API call failed: {e}")
+        return "I'm having trouble connecting right now. Please try again in a moment."
+
+
+async def call_gemini(prompt: str) -> str:
+    """Make a request to the Gemini API."""
+    if not GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY not set, using fallback response")
+        return "[Gemini API key not configured. Set GEMINI_API_KEY environment variable.]"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 1024,
+                    "topP": 0.9,
+                }
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        # Extract text from Gemini response format
+        candidates = data.get("candidates", [])
+        if candidates:
+            content = candidates[0].get("content", {})
+            parts = content.get("parts", [])
+            if parts:
+                return parts[0].get("text", "")
+
+        return "I wasn't able to generate a response. Please try again."
+
+
+def _fallback_message(
+    recommendations: list[CourseRecommendation],
+    transcript: TranscriptData,
+    career_goal: Optional[str],
+) -> str:
+    """Generate a simple advisor message without LLM."""
+    lines = [
+        f"Hi {transcript.student_name}! Based on your transcript "
+        f"({transcript.gpa} GPA, {transcript.total_credit_hours} hours completed), "
+        f"here are my recommendations for next semester:",
+        "",
+    ]
+
+    for rec in recommendations:
+        uncertainty_note = ""
+        if rec.uncertainty_type == "epistemic":
+            uncertainty_note = " (note: limited data available for this recommendation)"
+        elif rec.uncertainty_type == "aleatoric":
+            uncertainty_note = " (note: equally good alternatives exist)"
+
+        lines.append(f"• {rec.course_code}: {rec.course_name}{uncertainty_note}")
+        lines.append(f"  → {rec.reason}")
+        lines.append("")
+
+    if career_goal:
+        lines.append(f"These selections are aligned with your interest in {career_goal}.")
+
+    lines.append("Good luck next semester! Let me know if you have any questions.")
+
+    return "\n".join(lines)
 
 
 async def chat_with_advisor(
     conversation_history: list[dict],
     user_message: str,
+    transcript_context: Optional[str] = None,
 ) -> str:
     """
-    Conduct a multi-turn conversation with the AI academic advisor.
+    Multi-turn conversation with the AI academic advisor via Gemini.
 
     Args:
-        conversation_history: List of previous messages [{role, content}, ...]
-        user_message: The new message from the user
+        conversation_history: Previous messages [{role: "user"|"model", content: "..."}]
+        user_message: The new message from the student
+        transcript_context: Summary of the student's parsed transcript
 
     Returns:
-        Assistant's response text
+        Advisor's response text
     """
-    # Convert history to Gemini Content format using typed objects
+    if not client:
+        return "I'm not connected right now. Please make sure the Gemini API key is set up."
+
+    # Build system prompt with transcript context
+    system_prompt = CHAT_SYSTEM_PROMPT
+    if transcript_context:
+        system_prompt += f"\n\nSTUDENT TRANSCRIPT DATA (you have already reviewed this):\n{transcript_context}\n\nIMPORTANT: You have access to this student's transcript. Reference their specific courses, GPA, and progress when relevant. Do NOT say you don't have access to their transcript."
+
+    # Convert history to Gemini Content format
     gemini_history = []
     for msg in conversation_history:
         role = "model" if msg["role"] in ("assistant", "model") else "user"
@@ -220,11 +273,10 @@ async def chat_with_advisor(
             client.models.generate_content,
             model=MODEL,
             contents=gemini_history,
-            config=types.GenerateContentConfig(system_instruction=CHAT_SYSTEM_PROMPT),
+            config=types.GenerateContentConfig(system_instruction=system_prompt),
         )
 
         assistant_response = response.text
-
         logger.info(f"Chat response generated ({len(assistant_response)} chars)")
         return assistant_response
 
@@ -232,115 +284,3 @@ async def chat_with_advisor(
         logger.error(f"Gemini API error in chat: {e}")
         raise
 
-
-async def generate_alternative_paths(
-    completed_courses: list[str],
-) -> list[AlternativeCareerPath]:
-    """
-    Generate alternative career path suggestions based on completed courses.
-
-    Args:
-        completed_courses: List of completed course IDs
-
-    Returns:
-        List of AlternativeCareerPath objects (2-3 suggestions)
-    """
-    if not completed_courses:
-        return []
-
-    user_message = json.dumps({
-        "completed_course_ids": completed_courses,
-        "instructions": "Based on these completed courses, suggest 2-3 career paths that align well.",
-    })
-
-    try:
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model=MODEL,
-            contents=user_message,
-            config=types.GenerateContentConfig(system_instruction=ALTERNATIVE_PATHS_SYSTEM_PROMPT),
-        )
-
-        response_text = response.text
-        parsed = _parse_llm_json(response_text)
-
-        if not parsed or "paths" not in parsed:
-            logger.warning(f"Invalid paths response: {response_text[:200]}")
-            return []
-
-        paths = [
-            AlternativeCareerPath(
-                career=item["career"],
-                reasoning=item["reasoning"],
-            )
-            for item in parsed.get("paths", [])
-        ]
-
-        logger.info(f"Generated {len(paths)} alternative career paths")
-        return paths
-
-    except Exception as e:
-        logger.error(f"Gemini API error generating paths: {e}")
-        return []
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"Failed to parse alternative paths: {e}")
-        return []
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-def _parse_llm_json(response_text: str) -> Optional[dict]:
-    """
-    Parse JSON from LLM response, handling potential formatting issues.
-
-    Attempts to extract JSON even if there's extra text around it.
-    """
-    text = response_text.strip()
-
-    # Try direct parse first
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Try to find JSON object in response
-    start_idx = text.find("{")
-    end_idx = text.rfind("}") + 1
-
-    if start_idx != -1 and end_idx > start_idx:
-        try:
-            return json.loads(text[start_idx:end_idx])
-        except json.JSONDecodeError:
-            pass
-
-    return None
-
-
-def merge_professor_data(
-    recommendations: list[CourseRecommendation],
-    professors_map: dict,
-) -> list[CourseRecommendation]:
-    """
-    Merge professor recommendation data back into CourseRecommendation objects.
-
-    This is called after generate_reasoning to add professor data that wasn't
-    included in the LLM context.
-    """
-    from services.recommender import select_best_professor, score_professor
-    from models.schemas import ProfessorRecommendation
-
-    for rec in recommendations:
-        professors = professors_map.get(rec.course_id, [])
-        if professors:
-            best = select_best_professor(professors)
-            if best:
-                rec.professor = ProfessorRecommendation(
-                    professor_id=best.id,
-                    professor_name=best.name,
-                    avg_grade=best.avg_grade,
-                    consistency_score=best.grade_consistency,
-                )
-
-    return recommendations

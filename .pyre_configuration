@@ -1,0 +1,8 @@
+{
+  "source_directories": [
+    "advisorai/backend"
+  ],
+  "search_path": [
+    "advisorai/backend/.venv/lib/python3.9/site-packages"
+  ]
+}

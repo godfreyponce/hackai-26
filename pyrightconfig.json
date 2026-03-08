@@ -1,0 +1,5 @@
+{
+  "venvPath": "advisorai/backend",
+  "venv": ".venv",
+  "extraPaths": ["advisorai/backend"]
+}

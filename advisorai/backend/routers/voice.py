@@ -1,107 +1,178 @@
 """
-Voice/Chat router for AdvisorAI.
-Handles text-based conversation with the AI academic advisor.
+Voice/Chat router — Gemini-powered conversation with transcript + course catalog context.
 
 Endpoints:
-  POST /api/voice/start - Start a new conversation with greeting
-  POST /api/voice/chat  - Continue conversation with user message
+  POST /api/voice/start — Start conversation with greeting
+  POST /api/voice/chat  — Send message, get AI response (with real course data)
 """
 
 import logging
-from typing import Literal
+import re
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
 from services import llm
+from services.data_loader import get_course_store
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-# ============================================================================
-# Request/Response Models
-# ============================================================================
-
 class ChatMessage(BaseModel):
-    """A single message in the conversation history."""
     role: Literal["user", "model"]
     content: str
 
 
 class ChatRequest(BaseModel):
-    """Request body for /chat endpoint."""
     message: str
     history: list[ChatMessage] = []
+    transcript_context: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
-    """Response body for /chat and /start endpoints."""
     reply: str
     history: list[ChatMessage]
 
 
-# ============================================================================
-# Endpoints
-# ============================================================================
-
 ADVISOR_GREETING = (
-    "Hey there! I'm your UTD academic advisor assistant. "
-    "I'm here to help you plan your courses, explore degree requirements, "
-    "and figure out what classes might be a good fit for you. "
-    "What are you looking for this semester?"
+    "Hey there! I'm Comet Advisor, your AI academic advisor at UTD. "
+    "I've got your transcript pulled up and I'm ready to help you plan "
+    "your courses. What would you like to know?"
 )
 
+# Common UTD subject prefixes to detect in messages
+SUBJECT_PREFIXES = [
+    "CS", "SE", "CE", "EE", "CGS", "COGS", "MATH", "STAT", "PHYS",
+    "BMEN", "MECH", "ENGR", "BIOL", "CHEM", "ARTS", "HIST", "GOVT",
+    "ECON", "PSY", "SOC", "COMM", "ATCM", "BA", "FIN", "MKT", "OPRE",
+    "ACCT", "MIS", "OBHR", "IMS", "GEOS", "NATS", "RHET", "HUMA",
+]
 
-@router.post(
-    "/start",
-    response_model=ChatResponse,
-    summary="Start a new conversation",
-    description="Begins a fresh conversation with a greeting from the advisor.",
-)
+
+def _build_course_entry(code: str, store) -> str:
+    """Build a detailed course entry string with prereqs and description."""
+    info = store.get_course(code)
+    if not info:
+        return f"{code}: (not found in catalog)"
+    
+    parts = [f"{code}: {info.title} ({info.credits} credits)"]
+    
+    if info.description:
+        # Truncate long descriptions
+        desc = info.description[:200] + "..." if len(info.description) > 200 else info.description
+        parts.append(f"  Description: {desc}")
+    
+    # Get prerequisites
+    prereqs = store.get_prerequisites(code)
+    if prereqs:
+        parts.append(f"  Prerequisites: {', '.join(prereqs)}")
+    elif info.enrollment_reqs:
+        reqs = info.enrollment_reqs[:150] + "..." if len(info.enrollment_reqs) > 150 else info.enrollment_reqs
+        parts.append(f"  Enrollment Requirements: {reqs}")
+    else:
+        parts.append(f"  Prerequisites: None")
+    
+    return "\n".join(parts)
+
+
+def _extract_relevant_courses(message: str, history: list[ChatMessage]) -> str:
+    """Search our course catalog for courses relevant to the user's message."""
+    store = get_course_store()
+    if not store.courses:
+        return ""
+
+    # Combine message + recent history for context
+    full_text = message.lower()
+    for msg in history[-4:]:  # Last 4 messages
+        full_text += " " + msg.content.lower()
+
+    found_codes = set()
+
+    # 1. Look for explicit subject prefixes mentioned as standalone words
+    for prefix in SUBJECT_PREFIXES:
+        pattern = r'\b' + re.escape(prefix) + r'\b'
+        if re.search(pattern, message, re.IGNORECASE):
+            for code in store.courses:
+                if code.startswith(prefix + " "):
+                    found_codes.add(code)
+
+    # 2. Look for topic keywords
+    topic_keywords = {
+        "machine learning": ["CS 4375", "CS 4395", "CS 6375", "CS 6363"],
+        "artificial intelligence": ["CS 4365", "CS 6364"],
+        "data science": ["CS 4352", "CS 4391", "STAT 4382"],
+        "cybersecurity": ["CS 4389", "CS 4393", "CS 6324"],
+        "software engineer": ["CS 3354", "SE 3354", "CS 4361", "SE 4351"],
+        "operating system": ["CS 4348", "CS 6378"],
+        "algorithm": ["CS 3345", "CS 4349"],
+        "database": ["CS 4347", "CS 6360"],
+        "cognitive science": ["CGS 2301", "CGS 3325", "CGS 3342", "CGS 3361"],
+        "network": ["CS 4390", "CS 6390"],
+        "computer vision": ["CS 4391", "CS 6366"],
+        "web development": ["CS 4337"],
+        "graphics": ["CS 4361", "CS 6366"],
+        "compiler": ["CS 4386"],
+        "deep learning": ["CS 4395", "CS 6375"],
+        "natural language": ["CS 4395"],
+        "robotics": ["CS 4365", "SE 4367"],
+        "game": ["CS 4361", "CS 4361"],
+    }
+
+    for keyword, codes in topic_keywords.items():
+        if keyword in full_text:
+            found_codes.update(codes)
+
+    # 3. Look for specific course code mentions (e.g., "CS 1337", "CGS 2301")
+    code_pattern = re.compile(r'\b([A-Z]{2,4})\s*(\d{4})\b')
+    for match in code_pattern.finditer(message.upper()):
+        code = f"{match.group(1)} {match.group(2)}"
+        if store.get_course(code):
+            found_codes.add(code)
+
+    if not found_codes:
+        return ""
+
+    # Sort and limit to 25 courses, build detailed entries
+    sorted_codes = sorted(found_codes)[:25]
+    entries = [_build_course_entry(code, store) for code in sorted_codes]
+
+    return "RELEVANT UTD COURSES FROM OFFICIAL CATALOG (this is authoritative data):\n\n" + "\n\n".join(entries)
+
+
+@router.post("/start", response_model=ChatResponse)
 async def start_conversation() -> ChatResponse:
-    """
-    Start a new conversation with a hardcoded greeting.
-    Does not call the LLM - just returns a friendly opening message.
-    """
+    """Start a new conversation with a greeting."""
     greeting_message = ChatMessage(role="model", content=ADVISOR_GREETING)
-
     return ChatResponse(
         reply=ADVISOR_GREETING,
         history=[greeting_message],
     )
 
 
-@router.post(
-    "/chat",
-    response_model=ChatResponse,
-    summary="Send a message to the advisor",
-    description="Continues the conversation by sending a user message and receiving an advisor reply.",
-    responses={
-        200: {"description": "Successful response with advisor reply"},
-        500: {"description": "LLM call failed"},
-    },
-)
+@router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """
-    Process a user message and return the advisor's response.
-
-    The client maintains conversation state by sending the full history
-    with each request. The server returns the updated history including
-    the new exchange.
-    """
-    # Convert history to the format expected by llm.chat_with_advisor
+    """Send a message and get the advisor's response via Gemini."""
     conversation_history = [
         {"role": msg.role, "content": msg.content}
         for msg in request.history
     ]
 
+    # Search our course catalog for relevant courses
+    course_context = _extract_relevant_courses(request.message, request.history)
+
+    # Combine transcript + course catalog context
+    full_context = request.transcript_context or ""
+    if course_context:
+        full_context += ("\n\n" if full_context else "") + course_context
+
     try:
-        # Call the LLM service
         advisor_reply = await llm.chat_with_advisor(
             conversation_history=conversation_history,
             user_message=request.message,
+            transcript_context=full_context if full_context else None,
         )
     except Exception as e:
         logger.error(f"LLM chat failed: {e}", exc_info=True)
@@ -110,7 +181,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             detail=f"Failed to get response from advisor: {str(e)}",
         )
 
-    # Build updated history with the new exchange
+    # Build updated history
     updated_history = list(request.history)
     updated_history.append(ChatMessage(role="user", content=request.message))
     updated_history.append(ChatMessage(role="model", content=advisor_reply))

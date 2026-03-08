@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "./advisorai/backend/.venv/bin/python",
+  "python.analysis.extraPaths": [
+    "./advisorai/backend"
+  ]
+}

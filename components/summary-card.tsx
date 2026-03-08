@@ -1,8 +1,79 @@
 "use client";
 
+import React from "react";
 import { Play, Download } from "lucide-react";
 
-export function SummaryCard() {
+interface SummaryCardProps {
+  advisorMessage?: string;
+  studentName?: string;
+  completedCredits?: number;
+  major?: string;
+  gpa?: number;
+}
+
+export function SummaryCard({
+  advisorMessage,
+  studentName,
+  completedCredits,
+  major,
+  gpa,
+}: SummaryCardProps) {
+  const displayMessage = advisorMessage
+    ? advisorMessage.slice(0, 300) + (advisorMessage.length > 300 ? "..." : "")
+    : `Based on your transcript, you've completed ${completedCredits || 45} credits toward your CS degree. I recommend focusing on core upper-division requirements this year to stay on track for a Spring 2027 graduation.`;
+
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = React.useState(false);
+  const hasPlayedRef = React.useRef(false);
+
+  const playAudio = async () => {
+    if (isPlaying && audioRef.current) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+      return;
+    }
+
+    try {
+      setIsPlaying(true);
+      const res = await fetch("/api/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: displayMessage }),
+      });
+
+      if (!res.ok) throw new Error("TTS failed");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+
+      const audio = new Audio(url);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        setIsPlaying(false);
+      };
+
+      await audio.play().catch(e => {
+        console.warn("Autoplay was blocked by browser:", e);
+        setIsPlaying(false);
+      });
+    } catch (err) {
+      console.error("Audio playback error:", err);
+      setIsPlaying(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (!hasPlayedRef.current && displayMessage) {
+      hasPlayedRef.current = true;
+      playAudio();
+    }
+  }, [displayMessage]);
+
   return (
     <div className="relative bg-[#141428]/70 backdrop-blur-xl border-l-4 border-purple rounded-md p-8 shadow-[0_0_40px_rgba(123,47,190,0.1)]">
       {/* Export button - top right */}
@@ -22,19 +93,27 @@ export function SummaryCard() {
 
         {/* Summary text */}
         <p className="text-foreground text-base leading-relaxed flex-1">
-          Based on your transcript, you&apos;ve completed{" "}
-          <span className="text-teal font-semibold">45 credits</span> toward
-          your CS degree. I recommend focusing on core upper-division
-          requirements this year to stay on track for a{" "}
-          <span className="text-teal font-semibold">Spring 2027</span>{" "}
-          graduation.
+          {displayMessage}
         </p>
 
         {/* Play button */}
-        <button className="flex-shrink-0 w-12 h-12 rounded-full bg-teal flex items-center justify-center transition-all duration-300 hover:opacity-90 hover:shadow-[0_0_20px_rgba(0,194,203,0.5)]">
+        <button 
+          onClick={playAudio}
+          className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 hover:shadow-[0_0_20px_rgba(0,194,203,0.5)] ${isPlaying ? 'bg-orange animate-pulse' : 'bg-teal hover:opacity-90'}`}
+        >
           <Play className="w-5 h-5 text-background ml-0.5" fill="currentColor" />
         </button>
       </div>
+
+      {/* Student info bar */}
+      {(studentName || gpa) && (
+        <div className="mt-4 flex gap-4 text-sm text-muted-foreground">
+          {studentName && <span>👤 {studentName}</span>}
+          {major && <span>🎓 {major}</span>}
+          {gpa && <span>📊 GPA: {gpa}</span>}
+          {completedCredits && <span>📚 {completedCredits} credits completed</span>}
+        </div>
+      )}
     </div>
   );
 }

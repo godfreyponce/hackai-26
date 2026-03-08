@@ -7,4 +7,10 @@ __v0_jsx-dev-runtime.ts
 node_modules/
 .next/
 .env*.local
+.env
 .DS_Store
+__pycache__/
+*.pyc
+# Large Nebula data files
+advisorai/backend/data/
+advisorai/backend/.env
