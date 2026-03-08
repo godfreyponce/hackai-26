@@ -18,6 +18,48 @@ const SEMESTER_REGEX = /(?:fall|spring|summer)\s*(?:20)?\d{2}/gi;
 const GRAD_YEAR_REGEX = /(?:graduat\w*|finish|done|complete)\s+(?:by\s+)?(?:(fall|spring|summer)\s+)?(\d{4})/i;
 const GRAD_SEMESTER_REGEX = /(?:graduat\w*|finish)\s+(?:by\s+)?((?:fall|spring|summer)\s+\d{4})/i;
 
+// Helper: generate semester labels from a start semester to a graduation semester
+function generateSemesterLabels(start: string, gradSemester: string): string[] {
+  const seasonOrder = ["Spring", "Summer", "Fall"];
+  const labels: string[] = [];
+
+  // Parse "Fall 2026" -> { season: "Fall", year: 2026 }
+  const parse = (s: string) => {
+    const parts = s.trim().split(/\s+/);
+    return { season: parts[0], year: parseInt(parts[1]) };
+  };
+
+  const startParsed = parse(start);
+  const gradParsed = parse(gradSemester);
+
+  let { season, year } = startParsed;
+  let idx = seasonOrder.indexOf(season);
+  if (idx === -1) idx = 2; // default to Fall
+
+  // Generate semesters (skip Summer by default for standard plan)
+  for (let i = 0; i < 20; i++) { // safety cap at 20
+    const label = `${seasonOrder[idx]} ${year}`;
+    // Only include Fall and Spring (not Summer) for the skeleton
+    if (seasonOrder[idx] !== "Summer") {
+      labels.push(label);
+    }
+
+    // Check if we've reached or passed graduation
+    if (year > gradParsed.year || (year === gradParsed.year && idx >= seasonOrder.indexOf(gradParsed.season))) {
+      break;
+    }
+
+    // Advance to next semester
+    idx++;
+    if (idx >= seasonOrder.length) {
+      idx = 0;
+      year++;
+    }
+  }
+
+  return labels;
+}
+
 export default function SessionPage() {
   const [messages, setMessages] = useState<any[]>([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -43,7 +85,7 @@ export default function SessionPage() {
   // Prerequisite map for DnD validation (course_code -> [prereq_codes])
   const [prereqMap, setPrereqMap] = useState<Record<string, string[]>>({});
   
-  // DND Board State
+  // DND Board State — initialized with just inProgress; semester columns built in useEffect from transcript
   const [columns, setColumns] = useState<Record<string, any>>({
     inProgress: {
       title: "In Progress (Spring 2026)",
@@ -52,16 +94,6 @@ export default function SessionPage() {
       isCompleted: false,
       isInProgress: true,
     },
-    recommended: {
-      title: "Recommended for Fall 2026",
-      credits: 0,
-      courses: [],
-    },
-    later: {
-      title: "Later",
-      credits: 0,
-      courses: [],
-    }
   });
 
   const chatHistory = useRef<any[]>([]);
@@ -169,33 +201,48 @@ export default function SessionPage() {
           }
         });
 
-        // Set in-progress column
+        // Set in-progress column and generate empty semester skeleton
         const ipCredits = inProgressCourses.length * 3;
-        setColumns(prev => ({
-          ...prev,
+
+        // Build initial columns with empty semesters until expected graduation
+        const initColumns: Record<string, any> = {
           inProgress: {
-            ...prev.inProgress,
+            title: "In Progress (Spring 2026)",
             credits: ipCredits,
             courses: inProgressCourses,
+            isCompleted: false,
+            isInProgress: true,
           },
-        }));
+        };
+
+        // Determine start semester for planning (next semester after current)
+        const planStart = "Fall 2026";
+        const gradTarget = transcriptExpectedGrad.current || "Spring 2028";
+        const semLabels = generateSemesterLabels(planStart, gradTarget);
+
+        for (const label of semLabels) {
+          const key = label.replace(/\s+/g, "_");
+          initColumns[key] = {
+            title: label,
+            credits: 0,
+            courses: [],
+          };
+        }
+
+        // Add graduation marker
+        initColumns["graduation"] = {
+          title: `🎓 ${gradTarget}`,
+          credits: 0,
+          courses: [],
+        };
+
+        setColumns(initColumns);
 
         // Set previous semesters
         setPreviousSemesters(completedBySemester);
       } catch {}
     }
   }, []);
-
-  // Update recommended column title when target semester changes
-  useEffect(() => {
-    setColumns(prev => ({
-      ...prev,
-      recommended: {
-        ...prev.recommended,
-        title: `Recommended for ${targetSemester}`,
-      }
-    }));
-  }, [targetSemester]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -407,6 +454,76 @@ export default function SessionPage() {
     } catch {}
   };
 
+  // Execute structured board actions returned by the AI (ADD, REMOVE, MOVE)
+  const executeBoardActions = (actions: Array<{action: string; course_code: string; semester: string; to_semester?: string}>) => {
+    if (!actions || actions.length === 0) return;
+
+    setColumns(prev => {
+      const updated = { ...prev };
+
+      // Deep-copy each column to avoid mutation
+      for (const key of Object.keys(updated)) {
+        updated[key] = { ...updated[key], courses: [...updated[key].courses] };
+      }
+
+      for (const act of actions) {
+        const semKey = act.semester.replace(/\s+/g, "_");
+        const toSemKey = act.to_semester?.replace(/\s+/g, "_");
+
+        if (act.action === "ADD") {
+          // Ensure the target column exists; create it if needed
+          if (!updated[semKey]) {
+            updated[semKey] = { title: act.semester, credits: 0, courses: [] };
+          }
+          // Don't add if course already exists in that column
+          const alreadyThere = updated[semKey].courses.some((c: any) => c.code === act.course_code);
+          if (!alreadyThere) {
+            const newCourse: Course = {
+              id: `${act.course_code}-${Math.random().toString(36).substr(2, 9)}`,
+              code: act.course_code,
+              title: act.course_code, // will be enriched
+              professor: "Loading...",
+              badge: "Degree Plan" as const,
+              whyText: "Added by advisor.",
+              credits: 3,
+            };
+            updated[semKey].courses.push(newCourse);
+            updated[semKey].credits = (updated[semKey].credits || 0) + 3;
+            // Enrich in background
+            fetchAndEnrichCourse(act.course_code);
+          }
+        } else if (act.action === "REMOVE") {
+          if (updated[semKey]) {
+            const before = updated[semKey].courses.length;
+            updated[semKey].courses = updated[semKey].courses.filter((c: any) => c.code !== act.course_code);
+            const removed = before - updated[semKey].courses.length;
+            updated[semKey].credits = Math.max(0, (updated[semKey].credits || 0) - removed * 3);
+          }
+        } else if (act.action === "MOVE" && toSemKey) {
+          // Remove from source
+          let movedCourse: any = null;
+          if (updated[semKey]) {
+            const idx = updated[semKey].courses.findIndex((c: any) => c.code === act.course_code);
+            if (idx !== -1) {
+              movedCourse = updated[semKey].courses.splice(idx, 1)[0];
+              updated[semKey].credits = Math.max(0, (updated[semKey].credits || 0) - (movedCourse.credits || 3));
+            }
+          }
+          // Add to target
+          if (movedCourse) {
+            if (!updated[toSemKey]) {
+              updated[toSemKey] = { title: act.to_semester!, credits: 0, courses: [] };
+            }
+            updated[toSemKey].courses.push(movedCourse);
+            updated[toSemKey].credits = (updated[toSemKey].credits || 0) + (movedCourse.credits || 3);
+          }
+        }
+      }
+
+      return updated;
+    });
+  };
+
   // Helper to parse course codes from AI text and add to recommended
   const extractAndAddCourses = async (text: string) => {
     const matches = Array.from(text.matchAll(COURSE_REGEX)).map(m => m[0].toUpperCase());
@@ -422,9 +539,15 @@ export default function SessionPage() {
 
       if (newCodes.length === 0) return prevCols;
 
-      // Cap: don't exceed 15 credits (5 courses) in recommended column
-      const currentRecCredits = prevCols.recommended.credits || 0;
-      const maxNewCredits = 15 - currentRecCredits;
+      // Find the first future semester column (not inProgress, not graduation)
+      const targetKey = Object.keys(prevCols).find(
+        k => k !== "inProgress" && k !== "graduation" && (prevCols[k].courses || []).length < 6
+      );
+      if (!targetKey) return prevCols;
+
+      // Cap: don't exceed 15 credits (5 courses) in target column
+      const currentCredits = prevCols[targetKey].credits || 0;
+      const maxNewCredits = 15 - currentCredits;
       const maxNewCourses = Math.floor(maxNewCredits / 3);
       if (maxNewCourses <= 0) return prevCols;
 
@@ -442,10 +565,10 @@ export default function SessionPage() {
 
       return {
         ...prevCols,
-        recommended: {
-          ...prevCols.recommended,
-          credits: prevCols.recommended.credits + (newCourses.length * 3),
-          courses: [...prevCols.recommended.courses, ...newCourses],
+        [targetKey]: {
+          ...prevCols[targetKey],
+          credits: prevCols[targetKey].credits + (newCourses.length * 3),
+          courses: [...prevCols[targetKey].courses, ...newCourses],
         }
       };
     });
@@ -493,13 +616,27 @@ export default function SessionPage() {
     }
 
     try {
+      // Build a compact summary of the current board state for the AI
+      const boardSummary = Object.entries(columns)
+        .filter(([key]) => key !== "graduation")
+        .map(([, col]) => {
+          const courseCodes = (col.courses || []).map((c: any) => c.code).join(", ");
+          return `${col.title}: ${courseCodes || "(empty)"} [${col.credits || 0} credits]`;
+        }).join("\n");
+
+      const fullContext = [
+        transcriptCtx.current || "",
+        `\nCURRENT BOARD STATE (these are the semester columns the student sees):\n${boardSummary}`,
+        expectedGradDate ? `\nExpected Graduation: ${expectedGradDate}` : "",
+      ].join("");
+
       const res = await fetch(`${API_BASE}/api/voice/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: userText,
           history: chatHistory.current,
-          transcript_context: transcriptCtx.current,
+          transcript_context: fullContext,
           concise: conciseMode,
         }),
       });
@@ -508,8 +645,13 @@ export default function SessionPage() {
         const data = await res.json();
         chatHistory.current = data.history;
         
-        // Parse the advisor's text and update board
-        await extractAndAddCourses(data.reply);
+        // Execute structured board actions from AI (ADD, REMOVE, MOVE)
+        if (data.board_actions && data.board_actions.length > 0) {
+          executeBoardActions(data.board_actions);
+        } else {
+          // Fallback: parse course codes from text for backward compat
+          await extractAndAddCourses(data.reply);
+        }
 
         playAudio(data.reply);
 
@@ -533,6 +675,20 @@ export default function SessionPage() {
 
     const moveMessage = `I just moved ${courseCode} from "${fromSemester}" to "${toSemester}". Is this a good idea? Does it affect my plan?`;
 
+    // Include board state so AI knows the full picture
+    const boardSummary = Object.entries(columns)
+      .filter(([key]) => key !== "graduation")
+      .map(([, col]) => {
+        const courseCodes = (col.courses || []).map((c: any) => c.code).join(", ");
+        return `${col.title}: ${courseCodes || "(empty)"} [${col.credits || 0} credits]`;
+      }).join("\n");
+
+    const fullContext = [
+      transcriptCtx.current || "",
+      `\nCURRENT BOARD STATE:\n${boardSummary}`,
+      expectedGradDate ? `\nExpected Graduation: ${expectedGradDate}` : "",
+    ].join("");
+
     try {
       const res = await fetch(`${API_BASE}/api/voice/chat`, {
         method: "POST",
@@ -540,7 +696,7 @@ export default function SessionPage() {
         body: JSON.stringify({
           message: moveMessage,
           history: chatHistory.current,
-          transcript_context: transcriptCtx.current,
+          transcript_context: fullContext,
           concise: conciseMode,
         }),
       });
@@ -551,7 +707,7 @@ export default function SessionPage() {
         playAudio(data.reply);
       }
     } catch {}
-  }, [conciseMode]);
+  }, [conciseMode, columns, expectedGradDate]);
 
   const handleMicToggle = useCallback(() => {
     if (isSpeaking) return; // Don't allow recording while AI is speaking

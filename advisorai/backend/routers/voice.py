@@ -33,9 +33,17 @@ class ChatRequest(BaseModel):
     concise: bool = True  # Default ON for voice
 
 
+class BoardAction(BaseModel):
+    action: str          # "ADD", "REMOVE", "MOVE"
+    course_code: str     # e.g. "CS 4375"
+    semester: str        # e.g. "Fall 2027" (target for ADD, source for REMOVE)
+    to_semester: Optional[str] = None  # Only for MOVE actions
+
+
 class ChatResponse(BaseModel):
     reply: str
     history: list[ChatMessage]
+    board_actions: list[BoardAction] = []
 
 
 ADVISOR_GREETING = (
@@ -183,12 +191,33 @@ async def chat(request: ChatRequest) -> ChatResponse:
             detail=f"Failed to get response from advisor: {str(e)}",
         )
 
-    # Build updated history
+    # Parse board actions from AI response
+    board_actions = []
+    clean_reply = advisor_reply
+    action_pattern = re.compile(r'\[ACTION:(ADD|REMOVE|MOVE)\|([^\]]+)\]')
+    action_matches = action_pattern.findall(advisor_reply)
+
+    for action_type, params in action_matches:
+        parts = [p.strip() for p in params.split('|')]
+        if action_type == 'ADD' and len(parts) >= 2:
+            board_actions.append(BoardAction(action='ADD', course_code=parts[0], semester=parts[1]))
+        elif action_type == 'REMOVE' and len(parts) >= 2:
+            board_actions.append(BoardAction(action='REMOVE', course_code=parts[0], semester=parts[1]))
+        elif action_type == 'MOVE' and len(parts) >= 3:
+            board_actions.append(BoardAction(action='MOVE', course_code=parts[0], semester=parts[1], to_semester=parts[2]))
+
+    # Strip action tags from spoken reply
+    clean_reply = re.sub(r'\[ACTION:[^\]]*\]', '', advisor_reply).strip()
+    # Clean up leftover blank lines
+    clean_reply = re.sub(r'\n{2,}', '\n', clean_reply).strip()
+
+    # Build updated history (store clean reply without action tags)
     updated_history = list(request.history)
     updated_history.append(ChatMessage(role="user", content=request.message))
-    updated_history.append(ChatMessage(role="model", content=advisor_reply))
+    updated_history.append(ChatMessage(role="model", content=clean_reply))
 
     return ChatResponse(
-        reply=advisor_reply,
+        reply=clean_reply,
         history=updated_history,
+        board_actions=board_actions,
     )

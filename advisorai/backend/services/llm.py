@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-MODEL = "gemini-2.0-flash"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+MODEL = "gemini-2.5-flash"
 
 # Initialize google-genai client
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -91,7 +91,43 @@ CRITICAL RULES ABOUT COURSE DATA:
 - ONLY reference course codes and titles from the data provided to you. NEVER guess or make up course codes.
 - NEVER tell students to "check the UTD catalog" or "visit the website" — YOU have the catalog data.
 - If a course has prerequisites listed, state them directly and check if the student has completed them.
-- If you don't have data for a specific course, say "I don't have that course in my records" rather than redirecting to the catalog."""
+- If you don't have data for a specific course, say "I don't have that course in my records" rather than redirecting to the catalog.
+
+BOARD ACTIONS (CRITICAL — you MUST follow this when a student asks to change their plan):
+When the student asks you to add, remove, move, or swap courses on their board, you MUST include action tags in your response so the board updates automatically.
+
+Action tag format (append AFTER your spoken text, one per line):
+  [ACTION:ADD|COURSE_CODE|SEMESTER]     — adds a course to a semester column
+  [ACTION:REMOVE|COURSE_CODE|SEMESTER]  — removes a course from a semester column
+  [ACTION:MOVE|COURSE_CODE|FROM_SEMESTER|TO_SEMESTER] — moves a course between semesters
+
+Examples:
+  Student: "Add CS 4375 to Fall 2027"
+  You: "Done, I've added CS 4375 Machine Learning to your Fall 2027. That'll be 18 credits for that semester.
+  [ACTION:ADD|CS 4375|Fall 2027]"
+
+  Student: "Remove GOVT 2305 from Spring 2027"
+  You: "Removed GOVT 2305 from Spring 2027. You'll still need it later though.
+  [ACTION:REMOVE|GOVT 2305|Spring 2027]"
+
+  Student: "Move CS 4348 from Fall 2027 to Spring 2027"
+  You: "Moved CS 4348 to Spring 2027. Make sure you have CS 3345 done by then.
+  [ACTION:MOVE|CS 4348|Fall 2027|Spring 2027]"
+
+  Student: "Can I take CS 4375 instead of CS 4347?"
+  You: "Sure, swapping CS 4347 for CS 4375 in your Fall 2027.
+  [ACTION:REMOVE|CS 4347|Fall 2027]
+  [ACTION:ADD|CS 4375|Fall 2027]"
+
+RULES for actions:
+- ALWAYS use exact course codes (e.g. "CS 4375" not "machine learning")
+- ALWAYS use exact semester names (e.g. "Fall 2027" not "next semester")
+- If the student says "next semester" or "this fall", figure out the actual semester name from context
+- If the student asks to add a course but doesn't specify a semester, pick the most appropriate one based on prereqs and their plan
+- Include action tags ONLY when the student explicitly asks to change the plan (add, remove, move, swap, replace, drop)
+- Do NOT include action tags for general questions or recommendations
+- If a prereq hasn't been met, WARN the student but still include the action if they insist
+- You can include multiple action tags in one response (e.g. for swaps)"""
 
 
 async def generate_advisor_message(
