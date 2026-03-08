@@ -7,10 +7,11 @@ interface CourseCardProps {
   code: string;
   title: string;
   professor: string;
-  badge: "Core Requirement" | "Track Elective";
+  badge: "Core Requirement" | "Track Elective" | "Degree Plan";
   whyText: string;
   isCompleted?: boolean;
   delay?: number;
+  aRate?: number; // A-rate percentage (0-100)
 }
 
 export function CourseCard({
@@ -21,6 +22,7 @@ export function CourseCard({
   whyText,
   isCompleted = false,
   delay = 0,
+  aRate,
 }: CourseCardProps) {
   const [showTooltip, setShowTooltip] = useState(false);
 
@@ -63,6 +65,19 @@ export function CourseCard({
           <User className="w-3.5 h-3.5" />
           <span>{professor}</span>
         </div>
+
+        {/* A-Rate Progress Bar */}
+        {aRate !== undefined && aRate > 0 && (
+          <div className="mt-2">
+            <div className="w-full h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-green-500 to-emerald-400"
+                style={{ width: `${Math.min(aRate, 100)}%` }}
+              />
+            </div>
+            <p className="text-[10px] text-emerald-400/70 mt-0.5">{aRate}% A-rate</p>
+          </div>
+        )}
 
         {/* Badge */}
         <div className="mt-3">

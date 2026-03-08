@@ -383,6 +383,84 @@ async def _fetch_professor_with_grades(
     )
 
 
+async def get_best_professor(subject: str, course_number: str) -> dict | None:
+    """
+    Get the best professor for a course based on A-rate.
+
+    Uses GET /course/sections/trends to get all sections with embedded professor data.
+    Aggregates A-rate per professor across all sections.
+    Returns the professor with highest A-rate (minimum 30 total students).
+
+    Args:
+        subject: Subject prefix (e.g., "CS")
+        course_number: Course number (e.g., "3345")
+
+    Returns:
+        {"name": str, "a_rate": float, "total_students": int} or None
+    """
+    # Grade distribution indices per CLAUDE.md
+    A_INDICES = [0, 1, 2]  # A+, A, A-
+    TOTAL_INDEX = 23
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            resp = await client.get(
+                f"{BASE_URL}/course/sections/trends",
+                params={"subject_prefix": subject, "course_number": course_number},
+                headers=_headers(),
+            )
+            if resp.status_code != 200:
+                logger.debug(f"Nebula /course/sections/trends failed: {resp.status_code}")
+                return None
+
+            data = resp.json()
+            sections = data.get("data", [])
+        except httpx.HTTPError as e:
+            logger.debug(f"Nebula trends request failed: {e}")
+            return None
+
+    # Aggregate stats per professor
+    prof_stats: dict[str, dict] = {}
+
+    for section in sections:
+        dist = section.get("grade_distribution", [])
+        if len(dist) < 24 or dist[TOTAL_INDEX] < 5:
+            continue
+
+        total = dist[TOTAL_INDEX]
+        a_grades = sum(dist[i] for i in A_INDICES if i < len(dist))
+
+        for prof in section.get("professor_details", []):
+            first = prof.get("first_name", "")
+            last = prof.get("last_name", "")
+            name = f"{first} {last}".strip()
+            if not name:
+                continue
+
+            if name not in prof_stats:
+                prof_stats[name] = {"a_grades": 0, "total": 0}
+            prof_stats[name]["a_grades"] += a_grades
+            prof_stats[name]["total"] += total
+
+    # Find professor with highest A-rate (minimum 30 students)
+    best = None
+    best_rate = -1.0
+
+    for name, stats in prof_stats.items():
+        if stats["total"] < 30:
+            continue
+        rate = stats["a_grades"] / stats["total"]
+        if rate > best_rate:
+            best_rate = rate
+            best = {
+                "name": name,
+                "a_rate": round(rate * 100, 1),
+                "total_students": stats["total"],
+            }
+
+    return best
+
+
 async def get_sections_for_course(course_id: str) -> list[NebulaSection]:
     """
     Fetch sections for a single course.

@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     message: str
     history: list[ChatMessage] = []
     transcript_context: Optional[str] = None
+    concise: bool = True  # Default ON for voice
 
 
 class ChatResponse(BaseModel):
@@ -173,6 +174,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             conversation_history=conversation_history,
             user_message=request.message,
             transcript_context=full_context if full_context else None,
+            concise=request.concise,
         )
     except Exception as e:
         logger.error(f"LLM chat failed: {e}", exc_info=True)

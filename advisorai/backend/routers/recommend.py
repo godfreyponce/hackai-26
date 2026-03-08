@@ -7,6 +7,7 @@ transcript → recommender → Gemini LLM → SemesterPlan JSON
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from typing import Optional
+from pydantic import BaseModel
 
 from models.schemas import (
     TranscriptData,
@@ -15,7 +16,7 @@ from models.schemas import (
 )
 from services.transcript_parser import TranscriptParser
 from services.recommender import generate_recommendations
-from services.llm import generate_advisor_message
+from services.llm import generate_advisor_message, generate_full_plan
 from services.data_loader import get_course_store
 
 router = APIRouter()
@@ -123,3 +124,43 @@ async def recommend_from_data(transcript: TranscriptData, career_goal: Optional[
 async def get_recommendations(student_id: str):
     """Placeholder for fetching saved recommendations by student ID."""
     return {"student_id": student_id, "recommendations": [], "message": "Upload your transcript to get recommendations."}
+
+
+# ─── Full 4-Year Plan ─────────────────────────────────────────────
+
+class FullPlanRequest(BaseModel):
+    transcript_context: str
+    career_goal: Optional[str] = None
+    current_semester: str = "Fall 2026"
+    total_credit_hours: float = 0.0
+    gpa: Optional[float] = None
+    target_graduation: Optional[str] = None  # e.g. "Spring 2027" for early graduation requests
+
+
+@router.post("/full-plan")
+async def generate_full_degree_plan(request: FullPlanRequest):
+    """
+    Generate a complete multi-semester degree plan using Gemini.
+
+    POST body:
+    - transcript_context: Full transcript summary string
+    - career_goal: Optional career interest
+    - current_semester: e.g. "Fall 2026"
+    - total_credit_hours: Credits completed so far
+    - gpa: Student's cumulative GPA (optional)
+
+    Returns:
+    - {semesters: [{semester, courses: [{code, title, credits, reason}], total_credits}],
+       graduation_semester, total_semesters}
+    """
+    try:
+        plan = await generate_full_plan(
+            transcript_context=request.transcript_context,
+            career_goal=request.career_goal,
+            current_semester=request.current_semester,
+            total_credit_hours=request.total_credit_hours,
+            gpa=request.gpa,
+        )
+        return plan
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate degree plan: {e}")

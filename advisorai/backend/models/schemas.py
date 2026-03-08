@@ -3,6 +3,36 @@ from typing import List, Optional
 from enum import Enum
 
 
+class NebulaSection(BaseModel):
+    """A section fetched from the Nebula Labs API."""
+    id: str
+    days: List[str] = []
+    start_time: str = ""
+    end_time: str = ""
+    professor_id: str = ""
+    available_seats: Optional[int] = None
+    total_seats: Optional[int] = None
+
+
+class NebulaProfessor(BaseModel):
+    """A professor fetched from the Nebula Labs API with computed grade stats."""
+    id: str
+    name: str
+    avg_grade: float = 3.0
+    grade_consistency: float = 0.5
+
+
+class NebulaCourse(BaseModel):
+    """A course fetched from the Nebula Labs API."""
+    id: str
+    nebula_id: str = ""
+    name: str
+    prereqs: List[str] = []
+    credits: int = 3
+    sections: List[NebulaSection] = []
+    professors: List[NebulaProfessor] = []
+
+
 class Course(BaseModel):
     """Course model."""
     id: Optional[str] = None

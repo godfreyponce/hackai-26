@@ -41,7 +41,9 @@ Your role:
 FORMATTING RULES (STRICT):
 - NEVER use asterisks, bold (**text**), headers (##), or any markdown. Your text is spoken aloud.
 - Use plain text only. For emphasis, use words like "importantly" or "notably" instead of bold.
-- Keep responses to 2-5 sentences unless the student asks for detail.
+- Keep responses to 1-2 sentences MAXIMUM. Speak like a text message, not an email.
+- Do not repeat what the student just said. Never start with "Great question!", "Sure!", or "Of course!".
+- Get straight to the point. No filler phrases. No pleasantries.
 
 ADVISING APPROACH:
 - When a student mentions a minor, ALWAYS track it alongside their major going forward.
@@ -49,6 +51,24 @@ ADVISING APPROACH:
 - Suggest a balanced semester load that makes progress on both programs.
 - Proactively mention how many minor courses they still need if you can tell from the data.
 - If the student has a minor, their semester plan should include courses for BOTH the major and the minor.
+
+CREDIT HOUR RULES (STRICTLY ENFORCE):
+- Fall/Spring semesters: 12-18 credit hours (target: 15 = 5 courses x 3 credits)
+- Summer semesters: maximum 9-12 credit hours (3-4 courses)
+- NEVER suggest more than 6 courses in any single semester
+- If a student asks for more, warn them it requires an academic petition
+
+EARLY GRADUATION REQUESTS:
+- If a student asks to "graduate early" or "finish in 3 years", calculate whether it's possible within credit limits
+- To graduate early: they would need to take max credits (18/semester) plus summer courses (9-12 each)
+- If NOT possible: Be honest and say "Based on your remaining requirements, graduating in X semesters isn't possible without exceeding UTD's credit limits. The fastest realistic plan is Y semesters."
+- If POSSIBLE: Suggest the compressed plan but warn about the heavy workload and GPA impact
+- NEVER promise what cannot be delivered. Be realistic.
+
+MULTI-DISCIPLINARY COURSES:
+- A CS degree requires more than just CS courses. Include MATH, PHYS, ECS, RHET, GOVT courses
+- When recommending courses, include ALL required subjects: MATH 2413/2414/2418, PHYS 2325/2326, RHET 1302, GOVT 2305/2306, ECS 2390
+- Do not focus only on CS — the student needs a complete degree plan
 
 CONVERSATION FLOW:
 - After you've discussed enough to understand the student's major, minor, interests, and goals (usually after 3-4 exchanges), naturally wrap up by suggesting to generate their plan.
@@ -239,6 +259,7 @@ async def chat_with_advisor(
     conversation_history: list[dict],
     user_message: str,
     transcript_context: Optional[str] = None,
+    concise: bool = True,
 ) -> str:
     """
     Multi-turn conversation with the AI academic advisor via Gemini.
@@ -247,6 +268,7 @@ async def chat_with_advisor(
         conversation_history: Previous messages [{role: "user"|"model", content: "..."}]
         user_message: The new message from the student
         transcript_context: Summary of the student's parsed transcript
+        concise: If True, enforce extra-short responses (1-2 sentences)
 
     Returns:
         Advisor's response text
@@ -256,8 +278,25 @@ async def chat_with_advisor(
 
     # Build system prompt with transcript context
     system_prompt = CHAT_SYSTEM_PROMPT
+
+    # Inject concise mode instructions
+    if concise:
+        system_prompt += (
+            "\n\nCONCISE MODE ACTIVE: Reply in 1-2 sentences MAX. "
+            "No pleasantries. No elaboration. Be direct.\n"
+            "Good: 'You still need CS 4348 and CS 4349. Want me to add those?'\n"
+            "Bad: 'Great question! Based on your transcript, I can see you have completed...'"
+        )
+
     if transcript_context:
         system_prompt += f"\n\nSTUDENT TRANSCRIPT DATA (you have already reviewed this):\n{transcript_context}\n\nIMPORTANT: You have access to this student's transcript. Reference their specific courses, GPA, and progress when relevant. Do NOT say you don't have access to their transcript."
+
+        # Extract GPA from context and inject difficulty guidance
+        import re as _re
+        gpa_match = _re.search(r"GPA[:\s]+(\d+\.\d+)", transcript_context)
+        if gpa_match:
+            gpa_val = float(gpa_match.group(1))
+            system_prompt += build_gpa_guidance(gpa_val)
 
     # Convert history to Gemini Content format
     gemini_history = []
@@ -286,7 +325,7 @@ async def chat_with_advisor(
             config=types.GenerateContentConfig(system_instruction=system_prompt),
         )
 
-        assistant_response = response.text
+        assistant_response = response.text or ""
         # Strip markdown formatting Gemini sometimes adds despite instructions
         assistant_response = _strip_markdown(assistant_response)
         logger.info(f"Chat response generated ({len(assistant_response)} chars)")
@@ -312,5 +351,200 @@ def _strip_markdown(text: str) -> str:
     # Remove backtick code formatting
     text = re.sub(r'`(.+?)`', r'\1', text)
     return text.strip()
+
+
+# ─── GPA-Aware Advising ───────────────────────────────────────────
+
+def build_gpa_guidance(gpa: Optional[float]) -> str:
+    """Generate GPA-specific advising guidance to inject into the prompt."""
+    if gpa is None or gpa == 0.0:
+        return ""
+    if gpa >= 3.5:
+        return (
+            f"\nStudent GPA: {gpa:.2f} (strong). "
+            "They can handle a full 15-credit load including difficult courses. "
+            "Feel free to recommend challenging upper-division courses together."
+        )
+    elif gpa >= 3.0:
+        return (
+            f"\nStudent GPA: {gpa:.2f} (above average). "
+            "Limit to 1-2 notoriously difficult courses per semester (e.g. CS 3345, CS 4348, CS 4349). "
+            "Pair hard courses with lighter electives."
+        )
+    elif gpa >= 2.5:
+        return (
+            f"\nStudent GPA: {gpa:.2f} (average). "
+            "Do NOT put more than one of [CS 3345, CS 4348, CS 4349, CS 4384, MATH 2419] in the same semester. "
+            "Prioritize grade recovery — recommend courses where the student is likely to earn an A. "
+            "Consider suggesting 12 credit hours (4 courses) instead of 15 for tough semesters."
+        )
+    else:
+        return (
+            f"\nStudent GPA: {gpa:.2f} (needs improvement). "
+            "IMPORTANT: Protect their GPA. Recommend only 12 credit hours per semester. "
+            "Avoid all tier-3 difficulty courses until GPA improves above 2.5. "
+            "Suggest courses known for high A-rates first. "
+            "Explicitly mention the academic standing risk if they overload."
+        )
+
+
+# ─── Full 4-Year Plan Generation ─────────────────────────────────
+
+class _PlannedCourse:
+    def __init__(self, code: str, title: str, credits: int, reason: str):
+        self.code = code
+        self.title = title
+        self.credits = credits
+        self.reason = reason
+
+
+class _SemesterPlan:
+    def __init__(self, semester: str, courses: list, total_credits: int):
+        self.semester = semester
+        self.courses = courses
+        self.total_credits = total_credits
+
+
+def _validate_semester_credits(semester_name: str, courses: list, total_credits: int) -> tuple[list, int]:
+    """Enforce credit hour limits: summer max 9, fall/spring max 18."""
+    is_summer = "Summer" in semester_name
+    max_hours = 9 if is_summer else 18
+    while total_credits > max_hours and courses:
+        removed = courses.pop()
+        total_credits -= removed.get("credits", 3)
+    return courses, total_credits
+
+
+def _next_semesters(start: str, count: int) -> list[str]:
+    """Generate a list of upcoming semester labels starting from `start`."""
+    import re as _re
+    seasons = ["Spring", "Summer", "Fall"]
+    m = _re.match(r"(Spring|Summer|Fall)\s+(\d{4})", start, _re.IGNORECASE)
+    if not m:
+        # fallback
+        return [f"Fall {2026 + i // 2}" for i in range(count)]
+    season = m.group(1).capitalize()
+    year = int(m.group(2))
+    idx = seasons.index(season)
+    result = []
+    for _ in range(count):
+        result.append(f"{seasons[idx]} {year}")
+        idx += 1
+        if idx >= len(seasons):
+            idx = 0
+            year += 1
+    return result
+
+
+async def generate_full_plan(
+    transcript_context: str,
+    career_goal: Optional[str],
+    current_semester: str,
+    total_credit_hours: float,
+    gpa: Optional[float] = None,
+) -> dict:
+    """
+    Generate a complete multi-semester academic plan using Gemini.
+    Returns a dict with 'semesters' list and 'graduation_semester'.
+    """
+    if not client:
+        return {"semesters": [], "graduation_semester": "Unknown", "total_semesters": 0}
+
+    import math
+    TOTAL_DEGREE_HOURS = 124
+    AVG_HOURS_PER_SEMESTER = 15
+    remaining_hours = max(0, TOTAL_DEGREE_HOURS - total_credit_hours)
+    semesters_remaining = math.ceil(remaining_hours / AVG_HOURS_PER_SEMESTER)
+
+    gpa_note = build_gpa_guidance(gpa)
+
+    semester_labels = _next_semesters(current_semester, semesters_remaining + 1)
+
+    prompt = f"""You are CometAdvisor, generating a complete multi-semester degree plan for a UTD student.
+
+Student data:
+{transcript_context}
+
+Career goal: {career_goal or "General ECS degree"}
+Starting semester: {current_semester}
+Completed credit hours: {total_credit_hours}
+Remaining hours to graduate (124 total): {remaining_hours}
+Estimated semesters remaining: {semesters_remaining}
+{gpa_note}
+
+Upcoming semesters in order: {", ".join(semester_labels[:semesters_remaining])}
+
+MULTI-DISCIPLINARY REQUIREMENTS:
+- Include ALL required courses for the degree: CS, MATH, PHYS, ECS, RHET, GOVT, and any other subjects
+- Common requirements: MATH 2413, MATH 2414, MATH 2418, PHYS 2325, PHYS 2326, RHET 1302, GOVT 2305, GOVT 2306, ECS 2390
+- Do NOT only recommend CS courses — a complete degree plan includes math, physics, and core curriculum
+
+CREDIT HOUR RULES (STRICT - UTD POLICY):
+- Fall/Spring semesters: 12-18 credit hours (target 15, which is 5 x 3-credit courses)
+- Summer semesters: MAXIMUM 9 credit hours (3 courses) — absolutely no more
+- NEVER schedule more than 6 courses (18 credits) in Fall/Spring or 4 courses (12 credits) in Summer
+- If early graduation is requested but impossible within these limits, say so
+
+PREREQUISITE RULES (STRICT):
+- Respect ALL prerequisites — a course CANNOT appear before its prereqs are completed
+- Common chains: MATH 2413 → MATH 2414 → MATH 2418, CS 1337 → CS 2336 → CS 3345, PHYS 2325 → PHYS 2326
+- Do not repeat any course already completed in the transcript
+- Distribute lower-level courses in earlier semesters
+
+COURSE CODES:
+- Use ONLY real UTD course codes: CS, SE, CE, EE, MATH, STAT, PHYS, CGS, COGS, RHET, GOVT, ECS, BMEN, MECH
+- Include the accurate credit hours (most are 3, but MATH/PHYS labs may be 1, some MATH are 4)
+
+OUTPUT FORMAT (ONLY valid JSON, no markdown, no extra text):
+{{
+  "semesters": [
+    {{
+      "semester": "Fall 2026",
+      "courses": [
+        {{"code": "CS 3345", "title": "Data Structures and Algorithms", "credits": 3, "reason": "Core requirement, prereqs met"}},
+        {{"code": "MATH 2418", "title": "Linear Algebra", "credits": 4, "reason": "Math requirement, prereq for CS 3341"}}
+      ],
+      "total_credits": 15
+    }}
+  ],
+  "graduation_semester": "Spring 2028",
+  "note": "Optional: brief note if early graduation was requested but not possible"
+}}"""
+
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL,
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(
+                system_instruction="You generate academic plans as JSON only. No markdown fences, no explanation.",
+            ),
+        )
+
+        raw = (response.text or "").strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = "\n".join(raw.split("\n")[1:])
+        if raw.endswith("```"):
+            raw = "\n".join(raw.split("\n")[:-1])
+        raw = raw.strip()
+
+        plan = json.loads(raw)
+
+        # Validate and enforce credit limits per semester
+        for sem in plan.get("semesters", []):
+            sem["courses"], sem["total_credits"] = _validate_semester_credits(
+                sem.get("semester", ""),
+                sem.get("courses", []),
+                sem.get("total_credits", 0),
+            )
+
+        plan["total_semesters"] = len(plan.get("semesters", []))
+        return plan
+
+    except Exception as e:
+        logger.error(f"generate_full_plan failed: {e}")
+        return {"semesters": [], "graduation_semester": "Unknown", "total_semesters": 0, "error": str(e)}
+
 
 

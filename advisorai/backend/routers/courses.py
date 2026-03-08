@@ -4,10 +4,11 @@ Courses router — GET /api/courses
 Search and browse UTD course catalog from Nebula data.
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 from typing import Optional
 
 from services.data_loader import get_course_store
+from services import nebula
 
 router = APIRouter()
 
@@ -63,4 +64,41 @@ async def get_course(course_code: str):
         "school": info.school,
         "enrollment_reqs": info.enrollment_reqs,
         "prerequisites": store.get_prerequisites(code),
+    }
+
+
+@router.get("/{course_code}/professor")
+async def get_professor_for_course(course_code: str):
+    """
+    Get the best professor for a course based on A-rate.
+
+    Args:
+        course_code: Course code (e.g., "CS 3345", "CS+3345", or "CS%203345")
+
+    Returns:
+        {professor, a_rate, total_students, display} or {professor: None}
+    """
+    # Parse course code - handle various formats
+    code = course_code.replace("+", " ").replace("-", " ").strip()
+    parts = code.split()
+
+    if len(parts) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid course code format. Use 'CS 3345' or 'CS+3345'"
+        )
+
+    subject = parts[0].upper()
+    number = parts[1]
+
+    result = await nebula.get_best_professor(subject, number)
+
+    if not result:
+        return {"professor": None, "a_rate": None}
+
+    return {
+        "professor": result["name"],
+        "a_rate": result["a_rate"],
+        "total_students": result["total_students"],
+        "display": f"{result['name']} ({result['a_rate']}% A-rate)",
     }
