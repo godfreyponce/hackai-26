@@ -21,7 +21,7 @@ NEBULA_BASE = "https://api.utdnebula.com"
 CACHE_TTL = timedelta(days=7)
 
 # Subject prefixes to fetch from Nebula
-SUBJECTS = ["CS", "SE", "CE", "EE", "MATH", "STAT", "PHYS", "CGS", "COGS", "RHET", "GOVT", "ECS", "ENGR", "BMEN", "MECH"]
+SUBJECTS = ["CS", "SE", "CE", "EE", "MATH", "STAT", "PHYS", "CGS", "COGS", "RHET", "GOVT", "ECS", "ENGR", "BMEN", "MECH", "FIN", "BA", "MKT", "ACCT", "MIS", "OBHR", "OPRE", "IMS", "HIST", "HUMA", "ARTS", "ECON", "PSY", "SOC", "COMM", "ATCM", "BIOL", "CHEM", "GEOS", "NATS"]
 
 
 def _get_nebula_headers() -> dict:
@@ -80,7 +80,7 @@ def _is_cache_stale(path: str) -> bool:
 
 
 def fetch_and_cache_courses() -> list[dict]:
-    """Fetch courses from Nebula API and cache to disk."""
+    """Fetch courses from Nebula API and cache to disk. For use outside an event loop."""
     os.makedirs(DATA_DIR, exist_ok=True)
     cache_path = os.path.join(DATA_DIR, "combinedDB.courses.json")
 
@@ -93,7 +93,46 @@ def fetch_and_cache_courses() -> list[dict]:
     # Fetch from API
     logger.info("Fetching courses from Nebula Labs API...")
     try:
-        courses = asyncio.run(_fetch_all_courses())
+        # Check if we're inside a running event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We are inside a running loop — cannot use asyncio.run()
+            # Return empty and let the async variant handle it
+            logger.info("Inside running loop, deferring to async fetch")
+            return []
+        except RuntimeError:
+            # No running loop — safe to use asyncio.run()
+            courses = asyncio.run(_fetch_all_courses())
+            if courses:
+                with open(cache_path, "w") as f:
+                    json.dump(courses, f)
+                logger.info(f"Cached {len(courses)} courses to {cache_path}")
+                return courses
+    except Exception as e:
+        logger.error(f"Failed to fetch from Nebula: {e}")
+
+    # Try to load stale cache as fallback
+    if os.path.exists(cache_path):
+        logger.warning("Using stale cache as fallback")
+        with open(cache_path, "r") as f:
+            return json.load(f)
+
+    return []
+
+
+async def fetch_and_cache_courses_async() -> list[dict]:
+    """Async version for use inside a running event loop (e.g. uvicorn startup)."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    cache_path = os.path.join(DATA_DIR, "combinedDB.courses.json")
+
+    if not _is_cache_stale(cache_path):
+        logger.info("Using cached course data")
+        with open(cache_path, "r") as f:
+            return json.load(f)
+
+    logger.info("Fetching courses from Nebula Labs API (async)...")
+    try:
+        courses = await _fetch_all_courses()
         if courses:
             with open(cache_path, "w") as f:
                 json.dump(courses, f)
@@ -102,7 +141,6 @@ def fetch_and_cache_courses() -> list[dict]:
     except Exception as e:
         logger.error(f"Failed to fetch from Nebula: {e}")
 
-    # Try to load stale cache as fallback
     if os.path.exists(cache_path):
         logger.warning("Using stale cache as fallback")
         with open(cache_path, "r") as f:
@@ -160,13 +198,13 @@ class CourseDataStore:
         """Load and dedupe courses from combinedDB.courses.json or fetch from API."""
         path = os.path.join(DATA_DIR, "combinedDB.courses.json")
 
-        # Try to fetch/cache if missing or stale
-        if _is_cache_stale(path):
-            raw_courses = fetch_and_cache_courses()
-        else:
+        # Try to load from cache first
+        if not _is_cache_stale(path):
             logger.info(f"Loading courses from {path}...")
             with open(path, "r") as f:
                 raw_courses = json.load(f)
+        else:
+            raw_courses = fetch_and_cache_courses()
 
         if not raw_courses:
             logger.warning("No courses loaded - check Nebula API key")

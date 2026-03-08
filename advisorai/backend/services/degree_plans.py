@@ -111,11 +111,27 @@ CS_DEGREE_PLAN = {
             ],
         },
         "technical_electives": {
-            "label": "Technical Electives",
+            "label": "Technical Electives (pick 4)",
             "hours": 12,
-            "courses": [],  # Any CS 4XXX — 4 courses
-            "pattern": "CS 4XXX",
-            "count": 4,
+            "courses": [
+                "CS 4314",    # Intelligent Systems Analysis
+                "CS 4337",    # Organization of Programming Languages (also core, listed as option)
+                "CS 4352",    # Human-Computer Interaction
+                "CS 4361",    # Computer Graphics
+                "CS 4365",    # Artificial Intelligence
+                "CS 4375",    # Introduction to Machine Learning
+                "CS 4386",    # Compiler Design
+                "CS 4389",    # Data and Applications Security
+                "CS 4390",    # Computer Networks
+                "CS 4391",    # Introduction to Computer Vision
+                "CS 4393",    # Computer and Network Security
+                "CS 4395",    # Human Language Technologies
+                "CS 4396",    # Networking Laboratory
+                "CS 4397",    # Embedded Computer Systems
+                "CS 4398",    # Digital Forensics
+                "CS 4399",    # Cloud Computing
+            ],
+            "pick": 4,  # Student picks 4 of these
         },
         "core_curriculum": {
             "label": "State Core Curriculum",
@@ -359,6 +375,7 @@ def get_remaining_courses(plan: dict, completed_codes: list[str]) -> dict[str, l
     """
     Compute remaining required courses per category.
     Returns { category_key: [remaining_course_codes] }
+    For elective categories with 'pick' count, only include enough to fill the requirement.
     """
     completed_set = set(completed_codes)
     remaining = {}
@@ -366,16 +383,25 @@ def get_remaining_courses(plan: dict, completed_codes: list[str]) -> dict[str, l
     for cat_key, cat in plan["categories"].items():
         req_courses = cat.get("courses", [])
         alternatives = cat.get("alternatives", {})
+        pick_count = cat.get("pick")  # e.g. "pick 4 of these"
 
         still_needed = []
+        completed_in_cat = 0
         for course in req_courses:
             if course in completed_set:
+                completed_in_cat += 1
                 continue
             # Check if an alternative was completed
             alts = alternatives.get(course, [])
             if any(alt in completed_set for alt in alts):
+                completed_in_cat += 1
                 continue
             still_needed.append(course)
+
+        # For "pick N" categories (electives), only include enough to fill requirement
+        if pick_count is not None:
+            slots_remaining = max(0, pick_count - completed_in_cat)
+            still_needed = still_needed[:slots_remaining]
 
         if still_needed:
             remaining[cat_key] = still_needed

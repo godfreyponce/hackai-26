@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers import recommend, courses, voice, transcript
-from services.data_loader import get_course_store
+from services.data_loader import get_course_store, fetch_and_cache_courses_async
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Load course data on startup."""
     logger.info("Loading UTD course data...")
+    # Fetch courses from Nebula API if cache is stale (async-safe)
+    await fetch_and_cache_courses_async()
     store = get_course_store()
     logger.info(f"Ready — {len(store.courses)} courses loaded")
     yield

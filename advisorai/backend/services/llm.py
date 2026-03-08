@@ -25,7 +25,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-2.0-flash"
 
 # Initialize google-genai client
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -64,6 +64,15 @@ EARLY GRADUATION REQUESTS:
 - If NOT possible: Be honest and say "Based on your remaining requirements, graduating in X semesters isn't possible without exceeding UTD's credit limits. The fastest realistic plan is Y semesters."
 - If POSSIBLE: Suggest the compressed plan but warn about the heavy workload and GPA impact
 - NEVER promise what cannot be delivered. Be realistic.
+
+GRADUATION YEAR / TIMELINE CHANGES:
+- If a student asks to change their graduation date, asks "when will I graduate?", or mentions a specific year like "I want to graduate by Spring 2027", respond by:
+  1. Acknowledging the request
+  2. Briefly assessing feasibility (can they fit remaining courses?)
+  3. Telling them to "hit the Generate Full Plan button" (or re-generate if already done) so their board updates
+- When the student mentions a graduation year/semester like "Spring 2028" or "by 2027", note it clearly.
+- If the target is unrealistic, say the closest feasible date and why.
+- ALWAYS include the phrase "graduation" and the target semester in your reply so the frontend can detect it.
 
 MULTI-DISCIPLINARY COURSES:
 - A CS degree requires more than just CS courses. Include MATH, PHYS, ECS, RHET, GOVT courses
@@ -465,6 +474,129 @@ def _next_semesters(start: str, count: int) -> list[str]:
     return result
 
 
+def _compute_graduation_date(
+    current_semester: str, remaining_hours: float,
+    include_summers: bool = False, max_fall_spring: int = 15,
+) -> tuple[str, int]:
+    """Compute graduation date. Returns (graduation_semester, num_semesters)."""
+    import re as _re
+    if remaining_hours <= 0:
+        return (current_semester, 0)
+    m = _re.match(r"(Spring|Summer|Fall)\s+(\d{4})", current_semester, _re.IGNORECASE)
+    if not m:
+        return ("Spring 2028", 4)
+    seasons = ["Spring", "Summer", "Fall"]
+    s = m.group(1).capitalize()
+    y = int(m.group(2))
+    idx = seasons.index(s)
+    left = remaining_hours
+    count = 0
+    while left > 0 and count < 30:
+        cur = seasons[idx]
+        if cur == "Summer":
+            if include_summers:
+                left -= 9
+                count += 1
+        else:
+            left -= max_fall_spring
+            count += 1
+        if left <= 0:
+            return (f"{cur} {y}", count)
+        idx += 1
+        if idx >= len(seasons):
+            idx = 0
+            y += 1
+    return (f"{seasons[idx]} {y}", count)
+
+
+def _next_semesters_no_summer(start: str, count: int) -> list[str]:
+    """Generate Fall/Spring semester labels only (skip summers)."""
+    import re as _re
+    m = _re.match(r"(Spring|Summer|Fall)\s+(\d{4})", start, _re.IGNORECASE)
+    if not m:
+        return [f"{'Fall' if i % 2 == 0 else 'Spring'} {2026 + (i + 1) // 2}" for i in range(count)]
+    s = m.group(1).capitalize()
+    y = int(m.group(2))
+    result = []
+    while len(result) < count:
+        if s != "Summer":
+            result.append(f"{s} {y}")
+        if s == "Spring":
+            s = "Summer"
+        elif s == "Summer":
+            s = "Fall"
+        elif s == "Fall":
+            s = "Spring"
+            y += 1
+    return result
+
+
+def _semester_before(a: str, b: str) -> bool:
+    """Returns True if semester a is chronologically before semester b."""
+    import re as _re
+    season_order = {"Spring": 0, "Summer": 1, "Fall": 2}
+    ma = _re.match(r"(Spring|Summer|Fall)\s+(\d{4})", a, _re.IGNORECASE)
+    mb = _re.match(r"(Spring|Summer|Fall)\s+(\d{4})", b, _re.IGNORECASE)
+    if not ma or not mb:
+        return False
+    ya, yb = int(ma.group(2)), int(mb.group(2))
+    sa = season_order.get(ma.group(1).capitalize(), 0)
+    sb = season_order.get(mb.group(1).capitalize(), 0)
+    return (ya, sa) < (yb, sb)
+
+
+def _redistribute_semesters(
+    semesters: list[dict],
+    expected_labels: list[str],
+    accelerate: bool = False,
+) -> list[dict]:
+    """
+    If the LLM collapsed too many courses into too few semesters,
+    redistribute them across the expected semester labels.
+    Only triggers if actual semesters < expected / 2 (clear collapse).
+    """
+    if not semesters or not expected_labels:
+        return semesters
+
+    # If LLM produced a reasonable number of semesters, trust it
+    if len(semesters) >= max(2, len(expected_labels) // 2):
+        return semesters
+
+    # Collect all courses from all semesters
+    all_courses = []
+    for sem in semesters:
+        all_courses.extend(sem.get("courses", []))
+
+    if not all_courses:
+        return semesters
+
+    # Determine max courses per semester
+    new_semesters = []
+    idx = 0
+    for label in expected_labels:
+        if idx >= len(all_courses):
+            break
+        is_summer = "Summer" in label
+        max_courses = 3 if is_summer else 5
+        chunk = all_courses[idx:idx + max_courses]
+        credits = sum(c.get("credits", 3) for c in chunk)
+        new_semesters.append({
+            "semester": label,
+            "courses": chunk,
+            "total_credits": credits,
+        })
+        idx += len(chunk)
+
+    # If there are leftover courses, append to last semester
+    if idx < len(all_courses):
+        leftover = all_courses[idx:]
+        if new_semesters:
+            new_semesters[-1]["courses"].extend(leftover)
+            new_semesters[-1]["total_credits"] += sum(c.get("credits", 3) for c in leftover)
+
+    return new_semesters if new_semesters else semesters
+
+
 async def generate_full_plan(
     transcript_context: str,
     career_goal: Optional[str],
@@ -475,6 +607,7 @@ async def generate_full_plan(
     start_semester: Optional[str] = None,
     major: Optional[str] = None,
     completed_courses: Optional[list[str]] = None,
+    accelerate: bool = False,
 ) -> dict:
     """
     Generate a complete multi-semester academic plan using Gemini.
@@ -489,6 +622,7 @@ async def generate_full_plan(
         start_semester: When the student first enrolled (e.g., "Fall 2024")
         major: Student's major for degree plan lookup
         completed_courses: List of completed course codes
+        accelerate: Whether to attempt early graduation
 
     Returns:
         dict with 'semesters' list and 'graduation_semester'
@@ -530,43 +664,54 @@ async def generate_full_plan(
         if course not in completed_set and prereqs:
             all_prereqs_text += f"  {course} requires: {', '.join(prereqs)}\n"
 
-    # Calculate expected graduation if start_semester provided
-    if not target_graduation and start_semester:
-        # 4 years from start = 8 fall/spring semesters
-        import re as _re
-        m = _re.match(r"(Spring|Summer|Fall)\s+(\d{4})", start_semester, _re.IGNORECASE)
-        if m:
-            start_year = int(m.group(2))
-            grad_year = start_year + 4
-            target_graduation = f"Spring {grad_year}"
+    # ── Compute standard and accelerated graduation dates ──
+    standard_grad, standard_sems = _compute_graduation_date(
+        current_semester, remaining_hours, include_summers=False, max_fall_spring=15
+    )
+    accel_grad, accel_sems = _compute_graduation_date(
+        current_semester, remaining_hours, include_summers=True, max_fall_spring=18
+    )
+    acceleration_possible = _semester_before(accel_grad, standard_grad)
 
-    # Calculate minimum possible semesters (with max credits)
-    min_possible_semesters = math.ceil(remaining_hours / MAX_FALL_SPRING_HOURS)
-
-    # Early graduation handling
-    early_grad_note = ""
-    if target_graduation:
-        # Count semesters from current to target
-        target_sems = _count_semesters_between(current_semester, target_graduation)
-        if target_sems < min_possible_semesters:
-            early_grad_note = (
-                f"\n\nEARLY GRADUATION REQUEST: Student requested {target_graduation}, "
-                f"but this requires {remaining_hours} credits in {target_sems} semesters. "
-                f"This is NOT POSSIBLE without exceeding UTD's max credit limits or violating prerequisite chains. "
-                f"Generate the FASTEST realistic plan ({min_possible_semesters}+ semesters) and set the 'note' field to: "
-                f"'Sorry, it is not possible to graduate by {target_graduation} without exceeding UTD's maximum allowed credits per semester or violating prerequisite chains. The fastest possible plan is shown below.'"
-            )
-        else:
-            early_grad_note = (
-                f"\n\nTARGET GRADUATION: {target_graduation}. "
-                f"Generate a plan that reaches this goal. Adjust credit loads as needed "
-                f"(up to 18/Fall-Spring, 9/Summer)."
-            )
-            semesters_remaining = target_sems
+    if accelerate and acceleration_possible:
+        # Use accelerated plan with summers
+        target_graduation = accel_grad
+        semesters_remaining = accel_sems
+        early_grad_note = (
+            f"\n\nPLAN MODE: ACCELERATED GRADUATION — Student wants to graduate EARLY."
+            f"\nTarget: {accel_grad} (vs standard {standard_grad})."
+            f"\nInclude summer semesters with 9 credits max each."
+            f"\nUse up to 18 credits for Fall/Spring."
+            f"\nPrefer adding summer terms before overloading fall/spring."
+            f"\nIn the 'note' field: 'Accelerated plan targets {accel_grad} "
+            f"(vs standard {standard_grad}). Requires summer courses and heavier loads.'"
+        )
+        semester_labels = _next_semesters(current_semester, semesters_remaining + 2)
+    elif accelerate and not acceleration_possible:
+        # Can't accelerate — explain why
+        target_graduation = standard_grad
+        semesters_remaining = standard_sems
+        early_grad_note = (
+            f"\n\nPLAN MODE: STANDARD (early graduation not feasible)"
+            f"\nStudent requested early graduation, but even with max loads "
+            f"(18 fall/spring + 9 summer), graduation cannot be earlier than {standard_grad}."
+            f"\nPrerequisite chains and credit limits prevent compression."
+            f"\nIn the 'note' field: 'Early graduation is not possible. "
+            f"Prerequisites and credit limits mean {standard_grad} is the earliest feasible date.'"
+            f"\nDo NOT include summer semesters."
+        )
+        semester_labels = _next_semesters_no_summer(current_semester, semesters_remaining + 1)
+    else:
+        # Standard plan (no acceleration requested)
+        target_graduation = standard_grad
+        semesters_remaining = standard_sems
+        early_grad_note = (
+            "\n\nPLAN MODE: STANDARD — Target ~15 credits per Fall/Spring semester. "
+            "Do NOT include summer semesters. Plan using only Fall and Spring."
+        )
+        semester_labels = _next_semesters_no_summer(current_semester, semesters_remaining + 1)
 
     gpa_note = build_gpa_guidance(gpa)
-
-    semester_labels = _next_semesters(current_semester, max(semesters_remaining, min_possible_semesters) + 2)
 
     prompt = f"""You are CometAdvisor, an AI-powered academic advisor generating a COMPLETE multi-semester degree plan for a UTD student from NOW until GRADUATION.
 
@@ -583,7 +728,8 @@ Estimated semesters remaining: {semesters_remaining}
 {gpa_note}
 {early_grad_note}
 
-SEMESTERS TO PLAN (generate ALL of these): {", ".join(semester_labels[:semesters_remaining + 1])}
+SEMESTERS TO PLAN (you MUST generate EXACTLY these semesters — one JSON object per semester):
+{", ".join(semester_labels[:semesters_remaining + 1])}
 
 REMAINING REQUIRED COURSES (from official degree plan — you MUST schedule ALL of these):
 {remaining_courses_text}
@@ -592,7 +738,23 @@ PREREQUISITE CHAINS (MUST ENFORCE — a course CANNOT appear before its prereqs)
 {all_prereqs_text}
 
 YOUR TASK:
-Generate a COMPLETE semester-by-semester plan from {current_semester} until graduation. Each semester is a column in a horizontally scrollable board. Include EVERY remaining required course distributed across all semesters until graduation.
+Generate a COMPLETE semester-by-semester plan from {current_semester} until graduation.
+YOU MUST PRODUCE EXACTLY {semesters_remaining} SEMESTERS (or close to it).
+DISTRIBUTE courses EVENLY across all semesters. Do NOT put everything into one semester.
+
+DISTRIBUTION RULES (CRITICAL — FOLLOW EXACTLY):
+- You have {semesters_remaining} semesters to fill. Spread courses evenly.
+- Each Fall/Spring semester: target EXACTLY 5 courses (15 credits). Min 4, max 6.
+- Each Summer semester (if included): EXACTLY 3 courses (9 credits). No more.
+- If you have 20 remaining courses and 4 semesters, put ~5 per semester.
+- NEVER put more than 6 courses in any single semester.
+- NEVER leave a semester with 0 courses (except the graduation marker).
+
+ELECTIVE HANDLING (CRITICAL — NO PLACEHOLDERS):
+- For "Technical Electives (pick 4)" or similar categories: choose SPECIFIC real courses from the options listed.
+- NEVER output generic names like "CS Elective", "Technical Elective", "Free Elective", or "Elective Slot".
+- If the student needs free electives, pick real introductory courses in related fields (e.g., PHIL 1301, PSY 2301, ECON 2301, ARTS 1301, HIST 1301).
+- Every course you output MUST have a real course code (e.g., "CS 4375") and a real title.
 
 MULTI-DISCIPLINARY REQUIREMENTS (CRITICAL):
 - A CS degree requires MORE than just CS courses. You MUST include:
@@ -645,7 +807,9 @@ OUTPUT FORMAT (ONLY valid JSON, no markdown fences, no explanation):
   ],
   "graduation_semester": "Spring 2028",
   "note": "Plan includes all remaining degree requirements. Graduation in Spring 2028 with standard 15-credit semesters."
-}}"""
+}}
+
+REMINDER: You MUST output {semesters_remaining} semesters with courses spread across ALL of them. Do not collapse everything into one semester."""
 
     try:
         response = await asyncio.to_thread(
@@ -675,7 +839,18 @@ OUTPUT FORMAT (ONLY valid JSON, no markdown fences, no explanation):
                 sem.get("total_credits", 0),
             )
 
+        # Remove empty semesters (LLM sometimes generates trailing empty ones)
+        plan["semesters"] = [s for s in plan.get("semesters", []) if s.get("courses")]
+
+        # ── Redistribute if LLM collapsed courses into too few semesters ──
+        plan["semesters"] = _redistribute_semesters(
+            plan["semesters"], semester_labels[:semesters_remaining + 1], accelerate
+        )
+
         plan["total_semesters"] = len(plan.get("semesters", []))
+        plan["standard_graduation"] = standard_grad
+        plan["acceleration_possible"] = acceleration_possible if accelerate else None
+        plan["prerequisite_chains"] = prereq_chains
         return plan
 
     except Exception as e:

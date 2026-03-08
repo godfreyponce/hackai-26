@@ -138,6 +138,7 @@ class FullPlanRequest(BaseModel):
     start_semester: Optional[str] = None     # e.g. "Fall 2024" — when student started college
     major: Optional[str] = None              # e.g. "Computer Science"
     completed_courses: Optional[list[str]] = None  # List of completed course codes
+    accelerate: bool = False  # Whether to attempt early graduation
 
 
 @router.post("/full-plan")
@@ -170,8 +171,7 @@ async def generate_full_degree_plan(request: FullPlanRequest):
             target_graduation=request.target_graduation,
             start_semester=request.start_semester,
             major=request.major,
-            completed_courses=request.completed_courses,
-        )
+            completed_courses=request.completed_courses,            accelerate=request.accelerate,        )
         return plan
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate degree plan: {e}")

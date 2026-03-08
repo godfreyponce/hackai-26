@@ -9,6 +9,12 @@ from typing import Optional
 
 from services.data_loader import get_course_store
 from services import nebula
+from services.degree_plans import get_degree_plan
+import httpx
+import os
+
+NEBULA_BASE = "https://api.utdnebula.com"
+NEBULA_HEADERS = {"x-api-key": os.getenv("NEBULA_API_KEY", "")}
 
 router = APIRouter()
 
@@ -45,6 +51,23 @@ async def list_courses(
     ]
 
 
+@router.get("/prereqs-map")
+async def get_prereqs_map(major: Optional[str] = Query("Computer Science", description="Student's major")):
+    """
+    Return the full prerequisite chain map for a given major's degree plan.
+    Used by the frontend for drag-and-drop prerequisite validation.
+
+    Returns:
+        {prereqs: {course_code: [prereq_codes]}, completed_in_plan: [...]}
+    """
+    plan = get_degree_plan(major or "Computer Science")
+    if not plan:
+        return {"prereqs": {}}
+
+    prereq_chains = plan.get("prerequisite_chains", {})
+    return {"prereqs": prereq_chains}
+
+
 @router.get("/{course_code}")
 async def get_course(course_code: str):
     """Get details for a specific course (e.g., CS+1337)."""
@@ -54,6 +77,31 @@ async def get_course(course_code: str):
     info = store.get_course(code)
 
     if not info:
+        # Fallback: try Nebula API directly
+        try:
+            parts = code.split()
+            if len(parts) >= 2:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    resp = await client.get(
+                        f"{NEBULA_BASE}/course",
+                        params={"subject_prefix": parts[0], "course_number": parts[1]},
+                        headers=NEBULA_HEADERS,
+                    )
+                    if resp.status_code == 200:
+                        courses = resp.json().get("data", [])
+                        if courses:
+                            c = courses[0]
+                            return {
+                                "code": code,
+                                "name": c.get("title", code),
+                                "credits": int(c.get("credit_hours", "3") or "3"),
+                                "description": c.get("description", ""),
+                                "school": c.get("school", ""),
+                                "enrollment_reqs": c.get("enrollment_reqs", ""),
+                                "prerequisites": [],
+                            }
+        except Exception:
+            pass
         return {"error": f"Course {code} not found"}
 
     return {

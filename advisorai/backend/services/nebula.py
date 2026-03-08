@@ -15,7 +15,10 @@ Schema notes (from nebula-api repo):
 - Course.prerequisites is a CollectionRequirement with nested options containing CourseRequirement objects
 - CourseRequirement has 'class_reference' field (e.g., "CS 2305")
 - Meeting uses 'meeting_days' (not 'days')
-- GradeDistribution is [14]int: [A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F, W]
+- GradeDistribution is [14]int:
+    Index:  0    1    2    3    4    5    6    7    8    9   10   11   12   13
+    Grade: A+   A    A-   B+   B    B-   C+   C    C-   D+   D    D-   F    W
+- Total enrolled = sum of all 14 elements. Use as denominator for A-rate.
 - Section does NOT have an 'enrollment' field in the API schema
 """
 
@@ -24,6 +27,7 @@ import logging
 import os
 import re
 import statistics
+import time
 import httpx
 
 from models.schemas import NebulaCourse, NebulaProfessor, NebulaSection
@@ -33,11 +37,18 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.utdnebula.com"
 API_KEY = os.environ.get("NEBULA_API_KEY", "")
 
+# In-memory cache for professor lookups (course_key -> {result, timestamp})
+_professor_cache: dict[str, dict] = {}
+_CACHE_TTL = 3600  # 1 hour
+
 # Grade points for GPA calculation
-# Nebula grade_distribution index order: [A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F, W]
-# Total: 14 elements
-GRADE_POINTS = [4.0, 4.0, 3.7, 3.3, 3.0, 2.7, 2.3, 2.0, 1.7, 1.3, 1.0, 0.7, 0.0, 0.0]
+# Nebula grade_distribution: 14 elements (actual API format)
+#   [A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F, W]
+# For GPA: only letter grades (indices 0-12) carry grade points.
+# Total enrolled = sum of all 14 elements
+GRADE_POINTS = [4.0, 4.0, 3.7, 3.3, 3.0, 2.7, 2.3, 2.0, 1.7, 1.3, 1.0, 0.7, 0.0]  # A+ through F (indices 0-12)
 GRADE_LABELS = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F", "W"]
+A_INDICES = [0, 1, 2]  # A+, A, A-
 
 
 def _headers() -> dict:
@@ -97,18 +108,19 @@ def _parse_prereqs(prereqs_obj: dict | None) -> list[str]:
 
 def _compute_professor_stats(grade_distribution: list[int]) -> tuple[float, float]:
     """
-    From Nebula grade_distribution array compute avg_grade (GPA scale 0-4) and
-    grade_consistency (0-1, higher = more consistent = tighter distribution).
+    From Nebula grade_distribution array (14 elements) compute avg_grade (GPA scale 0-4)
+    and grade_consistency (0-1, higher = more consistent = tighter distribution).
     Returns (avg_grade, consistency).
     """
     if not grade_distribution:
         return 3.0, 0.5  # sensible defaults
 
-    # Handle both 14-element and shorter arrays
+    # Use only letter-grade indices (0-12: A+ through F) for GPA calculation
     weighted_points = []
-    for i, count in enumerate(grade_distribution[:len(GRADE_POINTS)]):
-        if i < len(GRADE_POINTS):
-            weighted_points.extend([GRADE_POINTS[i]] * int(count or 0))
+    for i, gp in enumerate(GRADE_POINTS):
+        if i < len(grade_distribution):
+            count = int(grade_distribution[i] or 0)
+            weighted_points.extend([gp] * count)
 
     if not weighted_points:
         return 3.0, 0.5
@@ -353,7 +365,8 @@ async def _fetch_professor_with_grades(
             raw = grade_data.get("data", grade_data) if isinstance(grade_data, dict) else grade_data
 
             # raw may be a single grade distribution or list of semester grade objects
-            distribution = [0] * len(GRADE_POINTS)
+            # The distribution is 14 elements; we only need indices 0-12 for GPA
+            distribution = [0] * 14
 
             if isinstance(raw, list):
                 # Aggregate all semester grade distributions
@@ -362,12 +375,14 @@ async def _fetch_professor_with_grades(
                         dist = entry.get("grade_distribution", [])
                     else:
                         dist = []
-                    for i, count in enumerate(dist[:len(GRADE_POINTS)]):
-                        distribution[i] += int(count or 0)
+                    for i, count in enumerate(dist[:14]):
+                        if i < 14:
+                            distribution[i] += int(count or 0)
             elif isinstance(raw, dict):
                 dist = raw.get("grade_distribution", [])
-                for i, count in enumerate(dist[:len(GRADE_POINTS)]):
-                    distribution[i] += int(count or 0)
+                for i, count in enumerate(dist[:14]):
+                    if i < 14:
+                        distribution[i] += int(count or 0)
 
             avg_grade, consistency = _compute_professor_stats(distribution)
     except httpx.HTTPError as e:
@@ -390,6 +405,7 @@ async def get_best_professor(subject: str, course_number: str) -> dict | None:
     Uses GET /course/sections/trends to get all sections with embedded professor data.
     Aggregates A-rate per professor across all sections.
     Returns the professor with highest A-rate (minimum 30 total students).
+    Results are cached in-memory for 1 hour.
 
     Args:
         subject: Subject prefix (e.g., "CS")
@@ -398,10 +414,10 @@ async def get_best_professor(subject: str, course_number: str) -> dict | None:
     Returns:
         {"name": str, "a_rate": float, "total_students": int} or None
     """
-    # Grade distribution format (14 elements):
-    # [A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F, W]
-    # A-rate = (A+ + A + A-) / (total excluding W)
-    A_INDICES = [0, 1, 2]  # A+, A, A-
+    cache_key = f"{subject}_{course_number}"
+    cached = _professor_cache.get(cache_key)
+    if cached and (time.time() - cached["ts"]) < _CACHE_TTL:
+        return cached["result"]
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
@@ -425,15 +441,15 @@ async def get_best_professor(subject: str, course_number: str) -> dict | None:
 
     for section in sections:
         dist = section.get("grade_distribution", [])
-        if len(dist) < 13:  # Need at least A+ through F
+        if not dist or len(dist) < 13:
             continue
 
-        # Total is sum of grades A+ through F (indices 0-12), excluding W (index 13)
-        total = sum(dist[i] for i in range(13) if i < len(dist))
+        # Total enrolled = sum of all elements in the distribution
+        total = sum(int(d or 0) for d in dist)
         if total < 5:  # Skip sections with very few students
             continue
 
-        a_grades = sum(dist[i] for i in A_INDICES if i < len(dist))
+        a_grades = sum(int(dist[i] or 0) for i in A_INDICES if i < len(dist))
 
         for prof in section.get("professor_details", []):
             first = prof.get("first_name", "")
@@ -463,6 +479,7 @@ async def get_best_professor(subject: str, course_number: str) -> dict | None:
                 "total_students": stats["total"],
             }
 
+    _professor_cache[cache_key] = {"result": best, "ts": time.time()}
     return best
 
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import {
   DndContext,
   closestCorners,
@@ -95,7 +95,8 @@ function getCreditWarning(credits: number, semester: string): { color: string; w
 
 // Droppable Column Component
 function DndColumn({ id, title, credits, courses, isCompleted, isInProgress }: ColumnProps) {
-  const borderColor = isInProgress ? "border-amber-500/30" : isCompleted ? "border-green-500/20" : "border-violet/10";
+  const isGraduation = title.includes("🎓");
+  const borderColor = isGraduation ? "border-violet-500/30" : isInProgress ? "border-amber-500/30" : isCompleted ? "border-green-500/20" : "border-violet/10";
   const creditStatus = getCreditWarning(credits, title);
 
   return (
@@ -130,9 +131,18 @@ function DndColumn({ id, title, credits, courses, isCompleted, isInProgress }: C
             />
           ))}
         </SortableContext>
-        {courses.length === 0 && (
+        {courses.length === 0 && !isGraduation && (
           <div className="flex-1 flex items-center justify-center border-2 border-dashed border-violet/10 rounded-lg opacity-50">
             <span className="text-sm text-muted-foreground">Drop courses here</span>
+          </div>
+        )}
+        {isGraduation && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <span className="text-5xl block mb-3">🎓</span>
+              <p className="text-sm font-bold text-violet-400" style={{ fontFamily: "'Figtree', sans-serif" }}>Graduation!</p>
+              <p className="text-xs text-muted-foreground mt-1">You made it, Comet!</p>
+            </div>
           </div>
         )}
       </div>
@@ -143,10 +153,81 @@ function DndColumn({ id, title, credits, courses, isCompleted, isInProgress }: C
 interface DndBoardProps {
   columns: Record<string, ColumnProps>;
   setColumns: React.Dispatch<React.SetStateAction<Record<string, ColumnProps>>>;
+  prereqMap?: Record<string, string[]>;  // course_code -> [prereq_codes]
+  completedCourses?: string[];           // Already completed course codes
+  onCourseMove?: (courseCode: string, fromSemester: string, toSemester: string) => void;
 }
 
-export function DndBoard({ columns, setColumns }: DndBoardProps) {
+// Prereq violation popup
+function PrereqViolationPopup({ 
+  course, 
+  missingPrereqs, 
+  onClose 
+}: { 
+  course: string; 
+  missingPrereqs: string[]; 
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 6000);
+    return () => clearTimeout(timer);
+  }, [onClose]);
+
+  return (
+    <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100] animate-in slide-in-from-top-2 duration-300">
+      <div className="bg-red-950/95 border border-red-500/40 rounded-xl px-6 py-4 shadow-[0_0_40px_rgba(239,68,68,0.3)] backdrop-blur-xl max-w-md">
+        <div className="flex items-start gap-3">
+          <span className="text-red-400 text-xl mt-0.5">⚠️</span>
+          <div>
+            <p className="font-semibold text-red-300 text-sm" style={{ fontFamily: "'Figtree', sans-serif" }}>
+              Can&apos;t move {course} here
+            </p>
+            <p className="text-red-400/80 text-xs mt-1">
+              Missing prerequisites: <span className="font-semibold text-red-300">{missingPrereqs.join(", ")}</span>
+            </p>
+            <p className="text-red-400/60 text-[10px] mt-1.5">
+              These courses must be completed or planned in an earlier semester.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-red-400/50 hover:text-red-300 ml-2 text-lg leading-none">&times;</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function DndBoard({ columns, setColumns, prereqMap, completedCourses, onCourseMove }: DndBoardProps) {
   const [activeCourse, setActiveCourse] = useState<Course | null>(null);
+  const [prereqViolation, setPrereqViolation] = useState<{ course: string; missing: string[] } | null>(null);
+
+  // Get the ordering of columns (semester order) for prereq checking
+  const getColumnOrder = useCallback(() => Object.keys(columns), [columns]);
+
+  // Check if moving a course to a target column violates prereqs
+  const validatePrereqs = useCallback((courseCode: string, targetColumnId: string): string[] => {
+    if (!prereqMap) return [];
+    const prereqs = prereqMap[courseCode];
+    if (!prereqs || prereqs.length === 0) return [];
+
+    const colOrder = getColumnOrder();
+    const targetIdx = colOrder.indexOf(targetColumnId);
+    if (targetIdx < 0) return [];
+
+    const completedSet = new Set(completedCourses || []);
+
+    // Collect all courses in earlier columns (before target)
+    const earlierCourses = new Set<string>();
+    for (let i = 0; i < targetIdx; i++) {
+      const col = columns[colOrder[i]];
+      if (col) {
+        col.courses.forEach(c => earlierCourses.add(c.code));
+      }
+    }
+
+    // Check which prereqs are NOT satisfied (not in completed or earlier columns)
+    const missing = prereqs.filter(p => !completedSet.has(p) && !earlierCourses.has(p));
+    return missing;
+  }, [prereqMap, completedCourses, columns, getColumnOrder]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -164,6 +245,11 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
     const course = active.data.current;
     if (course) {
       setActiveCourse(course as Course);
+      // Track source column for the onCourseMove callback
+      const sourceCol = findColumnOfCourse(active.id);
+      if (sourceCol) {
+        dragSourceRef.current = { columnId: sourceCol, courseCode: (course as Course).code };
+      }
     }
   };
 
@@ -189,6 +275,17 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
 
     if (!activeColumnId || !overColumnId || activeColumnId === overColumnId) {
       return;
+    }
+
+    // --- Prereq validation: check BEFORE allowing the cross-column move ---
+    const movedCourse = columns[activeColumnId].courses.find(c => c.id === activeId);
+    if (movedCourse) {
+      const missingPrereqs = validatePrereqs(movedCourse.code, overColumnId);
+      if (missingPrereqs.length > 0) {
+        // Block the move — show violation popup
+        setPrereqViolation({ course: movedCourse.code, missing: missingPrereqs });
+        return; // Don't perform the move
+      }
     }
 
     setColumns((prev) => {
@@ -232,6 +329,9 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
     });
   };
 
+  // Track the source column when a cross-column drag starts
+  const dragSourceRef = React.useRef<{ columnId: string; courseCode: string } | null>(null);
+
   const handleDragEnd = (event: any) => {
     const { active, over } = event;
     setActiveCourse(null);
@@ -258,6 +358,14 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
         }));
       }
     }
+
+    // If course was moved to a different column, notify parent for AI response
+    if (dragSourceRef.current && activeColumnId && activeColumnId !== dragSourceRef.current.columnId && onCourseMove) {
+      const fromTitle = columns[dragSourceRef.current.columnId]?.title || dragSourceRef.current.columnId;
+      const toTitle = columns[activeColumnId]?.title || activeColumnId;
+      onCourseMove(dragSourceRef.current.courseCode, fromTitle, toTitle);
+    }
+    dragSourceRef.current = null;
   };
 
   return (
@@ -268,6 +376,14 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
+      {prereqViolation && (
+        <PrereqViolationPopup
+          course={prereqViolation.course}
+          missingPrereqs={prereqViolation.missing}
+          onClose={() => setPrereqViolation(null)}
+        />
+      )}
+
       <div className="flex flex-nowrap overflow-x-auto gap-8 pb-32 -mx-2 px-2" style={{ scrollbarWidth: 'thin' }}>
         {Object.keys(columns).map((colId) => (
           <DndColumn

@@ -14,6 +14,10 @@ const COURSE_REGEX = /(?:CS|SE|CE|EE|MATH|STAT|PHYS|CGS|COGS|RHET|GOVT|ECS|BMEN|
 // Detect semester mentions in user messages
 const SEMESTER_REGEX = /(?:fall|spring|summer)\s*(?:20)?\d{2}/gi;
 
+// Detect graduation year in user messages like "graduate by 2027" or "graduate Spring 2028"
+const GRAD_YEAR_REGEX = /(?:graduat\w*|finish|done|complete)\s+(?:by\s+)?(?:(fall|spring|summer)\s+)?(\d{4})/i;
+const GRAD_SEMESTER_REGEX = /(?:graduat\w*|finish)\s+(?:by\s+)?((?:fall|spring|summer)\s+\d{4})/i;
+
 export default function SessionPage() {
   const [messages, setMessages] = useState<any[]>([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -26,9 +30,18 @@ export default function SessionPage() {
   const [conciseMode, setConciseMode] = useState(true); // Default ON for voice
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
   const [planGenerated, setPlanGenerated] = useState(false);
+  const [earlyGradMode, setEarlyGradMode] = useState(false);
+  const [expectedGradDate, setExpectedGradDate] = useState<string | null>(null);
+  const [displayGpa, setDisplayGpa] = useState<number | null>(null);
+  const [displayCredits, setDisplayCredits] = useState(0);
+  const [displayTotalRequired, setDisplayTotalRequired] = useState(124);
+  const [displayMajor, setDisplayMajor] = useState("Computer Science");
 
   // Previous semesters (expandable)
   const [previousSemesters, setPreviousSemesters] = useState<Record<string, Course[]>>({});
+
+  // Prerequisite map for DnD validation (course_code -> [prereq_codes])
+  const [prereqMap, setPrereqMap] = useState<Record<string, string[]>>({});
   
   // DND Board State
   const [columns, setColumns] = useState<Record<string, any>>({
@@ -123,6 +136,14 @@ export default function SessionPage() {
             const startYear = parseInt(parts[0]);
             transcriptExpectedGrad.current = `Spring ${startYear + 4}`;
           }
+        }
+
+        // Set display state from transcript
+        setDisplayGpa(t.gpa || null);
+        setDisplayCredits(t.total_credit_hours || 0);
+        setDisplayMajor(t.major || "Computer Science");
+        if (transcriptExpectedGrad.current) {
+          setExpectedGradDate(transcriptExpectedGrad.current);
         }
 
         // Separate in-progress (IP grade or current semester) from completed
@@ -264,7 +285,7 @@ export default function SessionPage() {
         URL.revokeObjectURL(url);
         isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("listening");
+        setAdvisorStatus("idle");
         if (onEnded) onEnded();
       };
 
@@ -272,7 +293,7 @@ export default function SessionPage() {
         URL.revokeObjectURL(url);
         isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("listening");
+        setAdvisorStatus("idle");
         if (onEnded) onEnded();
       };
 
@@ -281,7 +302,7 @@ export default function SessionPage() {
         URL.revokeObjectURL(url);
         isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("listening");
+        setAdvisorStatus("idle");
         if (onEnded) onEnded();
       });
 
@@ -289,7 +310,7 @@ export default function SessionPage() {
       console.error("Audio playback error:", error);
       isPlayingRef.current = false;
       setIsSpeaking(false);
-      setAdvisorStatus("listening");
+      setAdvisorStatus("idle");
       if (onEnded) onEnded();
     }
   };
@@ -314,10 +335,10 @@ export default function SessionPage() {
         if (res.ok) {
           const data = await res.json();
           chatHistory.current = data.history;
-          playAudio(data.reply, startListening);
+          playAudio(data.reply);
         }
       } catch (err) {
-        playAudio("Hey! I'm Comet Advisor. What courses are you thinking about?", startListening);
+        playAudio("Hey! I'm Comet Advisor. What courses are you thinking about?");
       }
     };
     startChat();
@@ -400,9 +421,17 @@ export default function SessionPage() {
       const newCodes = uniqueCodes.filter(code => !allExisting.includes(code));
 
       if (newCodes.length === 0) return prevCols;
-      addedCodes = newCodes;
 
-      const newCourses = newCodes.map(code => ({
+      // Cap: don't exceed 15 credits (5 courses) in recommended column
+      const currentRecCredits = prevCols.recommended.credits || 0;
+      const maxNewCredits = 15 - currentRecCredits;
+      const maxNewCourses = Math.floor(maxNewCredits / 3);
+      if (maxNewCourses <= 0) return prevCols;
+
+      const cappedCodes = newCodes.slice(0, maxNewCourses);
+      addedCodes = cappedCodes;
+
+      const newCourses = cappedCodes.map(code => ({
         id: code + "-" + Math.random().toString(36).substr(2, 9),
         code: code,
         title: code, // placeholder until enriched
@@ -422,7 +451,7 @@ export default function SessionPage() {
     });
 
     // Enrich asynchronously (won't block the voice response)
-    for (const code of uniqueCodes) {
+    for (const code of addedCodes) {
       fetchAndEnrichCourse(code);
     }
   };
@@ -435,6 +464,33 @@ export default function SessionPage() {
 
     // Detect target semester from user message
     detectTargetSemester(userText);
+
+    // Detect early graduation intent from voice
+    if (/graduate\s*early|finish\s*early|graduate.*sooner|3\s*years?|accelerat/i.test(userText)) {
+      setEarlyGradMode(true);
+    }
+
+    // Detect specific graduation year/semester from user (e.g. "graduate by 2027" or "graduate Spring 2028")
+    let detectedGradTarget: string | null = null;
+    const gradSemMatch = userText.match(GRAD_SEMESTER_REGEX);
+    const gradYearMatch = userText.match(GRAD_YEAR_REGEX);
+    if (gradSemMatch) {
+      const raw = gradSemMatch[1].trim();
+      const parts = raw.split(/\s+/);
+      const season = parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
+      detectedGradTarget = `${season} ${parts[1]}`;
+    } else if (gradYearMatch) {
+      const year = gradYearMatch[2];
+      const season = gradYearMatch[1]
+        ? gradYearMatch[1].charAt(0).toUpperCase() + gradYearMatch[1].slice(1).toLowerCase()
+        : "Spring";
+      detectedGradTarget = `${season} ${year}`;
+    }
+
+    if (detectedGradTarget) {
+      transcriptExpectedGrad.current = detectedGradTarget;
+      setExpectedGradDate(detectedGradTarget);
+    }
 
     try {
       const res = await fetch(`${API_BASE}/api/voice/chat`, {
@@ -455,26 +511,60 @@ export default function SessionPage() {
         // Parse the advisor's text and update board
         await extractAndAddCourses(data.reply);
 
-        playAudio(data.reply, startListening);
+        playAudio(data.reply);
+
+        // If a graduation year was detected and we already have a plan, auto-regenerate
+        if (detectedGradTarget && planGenerated) {
+          setTimeout(() => handleGeneratePlan(), 500);
+        }
       } else {
-        playAudio("I had trouble understanding that. Could you try again?", startListening);
+        playAudio("I had trouble understanding that. Could you try again?");
       }
     } catch (err) {
-      playAudio("I'm having trouble connecting. Please try again.", startListening);
+      playAudio("I'm having trouble connecting. Please try again.");
     }
 
     setIsLoading(false);
   };
 
+  // Called when user drags a course between semesters on the DnD board
+  const handleCourseMove = useCallback(async (courseCode: string, fromSemester: string, toSemester: string) => {
+    if (!transcriptCtx.current) return;
+
+    const moveMessage = `I just moved ${courseCode} from "${fromSemester}" to "${toSemester}". Is this a good idea? Does it affect my plan?`;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/voice/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: moveMessage,
+          history: chatHistory.current,
+          transcript_context: transcriptCtx.current,
+          concise: conciseMode,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        chatHistory.current = data.history;
+        playAudio(data.reply);
+      }
+    } catch {}
+  }, [conciseMode]);
+
   const handleMicToggle = useCallback(() => {
+    if (isSpeaking) return; // Don't allow recording while AI is speaking
     if (isRecording && recognitionRef.current) {
+      // Stop recording
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       recognitionRef.current.stop();
       setIsRecording(false);
       setAdvisorStatus("idle");
     } else {
       startListening();
     }
-  }, [isRecording]);
+  }, [isRecording, isSpeaking]);
 
   const handleExportPlan = useCallback(() => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(columns, null, 2));
@@ -486,7 +576,7 @@ export default function SessionPage() {
     document.body.removeChild(a);
   }, [columns]);
 
-  const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string, note?: string}) => {
+  const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string, note?: string, prerequisite_chains?: Record<string, string[]>}) => {
     const newColumns: Record<string, any> = {
       inProgress: columns.inProgress, // preserve in-progress
     };
@@ -524,10 +614,25 @@ export default function SessionPage() {
     setColumns(newColumns);
     setPlanGenerated(true);
 
-    // Fetch professor data for every planned course in background
-    plan.semesters.flatMap((s: any) => s.courses || []).forEach((c: any) => {
-      fetchAndEnrichCourse(c.code);
-    });
+    // Store prerequisite chains for DnD validation
+    if (plan.prerequisite_chains) {
+      setPrereqMap(plan.prerequisite_chains);
+    }
+
+    // Update expected graduation from plan response
+    if (plan.graduation_semester && plan.graduation_semester !== "Unknown") {
+      setExpectedGradDate(plan.graduation_semester);
+    }
+
+    // Fetch professor data for every planned course in background (batched, 5 at a time)
+    const allCourses = plan.semesters.flatMap((s: any) => s.courses || []);
+    const batchSize = 5;
+    (async () => {
+      for (let i = 0; i < allCourses.length; i += batchSize) {
+        const batch = allCourses.slice(i, i + batchSize);
+        await Promise.allSettled(batch.map((c: any) => fetchAndEnrichCourse(c.code)));
+      }
+    })();
   };
 
   const handleGeneratePlan = async () => {
@@ -550,9 +655,10 @@ export default function SessionPage() {
           total_credit_hours: t.total_credit_hours || 0,
           gpa: t.gpa || null,
           start_semester: transcriptStartSem.current,
-          target_graduation: transcriptExpectedGrad.current,
+          target_graduation: expectedGradDate || transcriptExpectedGrad.current,
           major: transcriptMajor.current,
           completed_courses: transcriptCompletedCodes.current,
+          accelerate: earlyGradMode,
         }),
       });
 
@@ -561,16 +667,20 @@ export default function SessionPage() {
         if (plan.semesters && plan.semesters.length > 0) {
           buildColumnsFromPlan(plan);
           const noteText = plan.note ? ` ${plan.note}` : "";
+          const accelMsg = earlyGradMode && plan.acceleration_possible === false
+            ? " Early graduation isn't feasible with your remaining requirements."
+            : earlyGradMode && plan.acceleration_possible
+            ? " This is an accelerated schedule!"
+            : "";
           playAudio(
-            `Your full ${plan.total_semesters}-semester plan is ready! Graduating ${plan.graduation_semester}. You can scroll right to see all semesters and drag courses around to customize it.${noteText}`,
-            startListening
+            `Your ${plan.total_semesters}-semester plan is ready! Graduating ${plan.graduation_semester}.${accelMsg} Scroll right to see all semesters and drag to customize.${noteText}`
           );
         } else {
-          playAudio("I had trouble building the plan. Try asking me about specific semesters instead.", startListening);
+          playAudio("I had trouble building the plan. Try asking me about specific semesters instead.");
         }
       }
     } catch {
-      playAudio("Couldn't generate the plan right now. Please try again.", startListening);
+      playAudio("Couldn't generate the plan right now. Please try again.");
     }
 
     setIsGeneratingPlan(false);
@@ -583,18 +693,10 @@ export default function SessionPage() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col pt-24 pb-12 px-8">
-      {/* Concise Mode Toggle - Top Right */}
-      <button
-        onClick={() => setConciseMode(p => !p)}
-        className="fixed top-6 right-6 px-3 py-1.5 rounded-full border border-white/10 text-xs text-muted-foreground hover:border-violet-400/40 transition-all z-50"
-      >
-        {conciseMode ? "⚡ Concise" : "💬 Detailed"}
-      </button>
-
       <div className="max-w-7xl mx-auto w-full flex flex-col items-center">
 
         {/* Top Center: Voice Avatar */}
-        <div className="flex flex-col items-center mb-16 relative">
+        <div className="flex flex-col items-center mb-8 relative">
            <AIAvatar isSpeaking={isSpeaking} status={advisorStatus} />
            
            {isLoading && (
@@ -604,30 +706,88 @@ export default function SessionPage() {
              </div>
            )}
 
-           {/* Manual Mic Override if disabled */}
-           {advisorStatus === "idle" && !isLoading && (
+           {/* Manual Mic Start/Stop Button — always visible when not loading/speaking */}
+           {!isLoading && !isSpeaking && (
              <button 
                onClick={handleMicToggle}
-               className="mt-6 px-5 py-2.5 rounded-full border border-violet/20 flex items-center gap-2.5 hover:bg-violet/10 hover:border-violet text-muted-foreground transition-all shadow-sm"
-               >
-               <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
-               Tap to speak
+               className={`mt-6 px-5 py-2.5 rounded-full border flex items-center gap-2.5 transition-all shadow-sm ${
+                 isRecording
+                   ? "border-red-500/50 bg-red-500/10 text-red-400 hover:bg-red-500/20"
+                   : "border-violet/20 text-muted-foreground hover:bg-violet/10 hover:border-violet"
+               }`}
+             >
+               <span className={`w-2.5 h-2.5 rounded-full ${isRecording ? "bg-red-500 animate-pulse" : "bg-green-500"}`} />
+               {isRecording ? "Stop Recording" : "Start Recording"}
              </button>
            )}
-
-           {/* Generate My Plan Button */}
-           <button
-             onClick={handleGeneratePlan}
-             disabled={isGeneratingPlan || isLoading}
-             className="mt-4 px-6 py-3 rounded-xl bg-violet-600/80 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm flex items-center gap-2.5 shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:shadow-[0_0_30px_rgba(139,92,246,0.5)] transition-all"
-           >
-             {isGeneratingPlan ? (
-               <><Loader2 className="w-4 h-4 animate-spin" /> Generating Plan...</>
-             ) : (
-               <><ChevronRight className="w-4 h-4" /> Generate My Full Plan</>
-             )}
-           </button>
         </div>
+
+        {/* Graduation Summary Bar */}
+        {transcriptCtx.current && (
+          <div className="w-full mb-8">
+            <div className="bg-[#141428]/60 border border-violet/10 rounded-2xl p-6 backdrop-blur-sm">
+              <div className="flex items-center justify-between flex-wrap gap-4 mb-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">🎓</span>
+                  <div>
+                    <p className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">Expected Graduation</p>
+                    <p className="text-xl font-bold text-foreground" style={{ fontFamily: "'Figtree', sans-serif" }}>
+                      {expectedGradDate || "Generate a plan to see"}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-5 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-base">📚</span>
+                    <span>{displayCredits}<span className="text-muted-foreground/50">/{displayTotalRequired}</span></span>
+                  </div>
+                  {displayGpa !== null && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-base">📊</span>
+                      <span>{displayGpa.toFixed(2)}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-base">💻</span>
+                    <span>{displayMajor}</span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="flex items-center gap-3 pt-4 border-t border-white/5">
+                <button
+                  onClick={handleGeneratePlan}
+                  disabled={isGeneratingPlan || isLoading}
+                  className="px-6 py-3 rounded-xl bg-violet-600/80 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm flex items-center gap-2.5 shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:shadow-[0_0_30px_rgba(139,92,246,0.5)] transition-all"
+                >
+                  {isGeneratingPlan ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Generating...</>
+                  ) : (
+                    <>🎓 Generate Full Plan</>
+                  )}
+                </button>
+                
+                <button
+                  onClick={() => setEarlyGradMode(p => !p)}
+                  className={`px-5 py-3 rounded-xl border text-sm font-semibold flex items-center gap-2 transition-all ${
+                    earlyGradMode 
+                      ? "border-amber-500/50 bg-amber-500/10 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.15)]" 
+                      : "border-white/10 text-muted-foreground hover:border-violet-400/30"
+                  }`}
+                >
+                  {earlyGradMode ? "⚡ Early Graduation ON" : "⚡ Graduate Early"}
+                </button>
+
+                <button
+                  onClick={() => setConciseMode(p => !p)}
+                  className="ml-auto px-3 py-2 rounded-lg border border-white/10 text-xs text-muted-foreground hover:border-violet-400/40 transition-all"
+                >
+                  {conciseMode ? "⚡ Concise" : "💬 Detailed"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Expandable Previous Semesters */}
         {semesterKeys.length > 0 && (
@@ -680,32 +840,15 @@ export default function SessionPage() {
           </div>
         )}
 
-        {/* Generate My Plan Button - visible after 3+ exchanges */}
-        {messageCount.current >= 3 && !planGenerated && (
-          <div className="w-full flex justify-center mb-8">
-            <button
-              onClick={handleGeneratePlan}
-              disabled={isGeneratingPlan}
-              className="px-8 py-4 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-[var(--font-heading)] font-semibold text-lg flex items-center gap-3 shadow-[0_0_30px_rgba(123,47,190,0.3)] hover:scale-105 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isGeneratingPlan ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Generating Plan...
-                </>
-              ) : (
-                <>
-                  <span className="text-xl">🎓</span>
-                  Generate My Plan
-                </>
-              )}
-            </button>
-          </div>
-        )}
-
         {/* Below Avatar: Drag and Drop Interactive Board */}
         <div className="w-full">
-           <DndBoard columns={columns} setColumns={setColumns} />
+           <DndBoard
+             columns={columns}
+             setColumns={setColumns}
+             prereqMap={prereqMap}
+             completedCourses={transcriptCompletedCodes.current}
+             onCourseMove={handleCourseMove}
+           />
         </div>
 
       </div>
