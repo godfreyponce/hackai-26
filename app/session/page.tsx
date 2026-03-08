@@ -2,13 +2,16 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { AIAvatar } from "@/components/ai-avatar";
-import { Download, Loader2 } from "lucide-react";
+import { Download, Loader2, ChevronRight, ChevronDown } from "lucide-react";
 import { DndBoard, Course } from "@/components/dnd-board";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Fallback helper to detect UTD courses in text like "CS 1337" or "MATH 2418"
-const COURSE_REGEX = /(?:CS|SE|CE|EE|MATH|STAT|PHYS|CGS|COGS)\s\d{4}/gi;
+const COURSE_REGEX = /(?:CS|SE|CE|EE|MATH|STAT|PHYS|CGS|COGS|RHET|GOVT|ECS|BMEN|MECH)[\s]\d{4}/gi;
+
+// Detect semester mentions in user messages
+const SEMESTER_REGEX = /(?:fall|spring|summer)\s*(?:20)?\d{2}/gi;
 
 export default function SessionPage() {
   const [messages, setMessages] = useState<any[]>([]);
@@ -17,22 +20,28 @@ export default function SessionPage() {
   const [advisorStatus, setAdvisorStatus] = useState<"listening" | "speaking" | "idle">("idle");
   const [isLoading, setIsLoading] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
+  const [showPrevious, setShowPrevious] = useState(false);
+  const [targetSemester, setTargetSemester] = useState("Fall 2026");
+  
+  // Previous semesters (expandable)
+  const [previousSemesters, setPreviousSemesters] = useState<Record<string, Course[]>>({});
   
   // DND Board State
   const [columns, setColumns] = useState<Record<string, any>>({
-    completed: {
-      title: "Completed",
+    inProgress: {
+      title: "In Progress (Spring 2026)",
       credits: 0,
       courses: [],
-      isCompleted: true,
+      isCompleted: false,
+      isInProgress: true,
     },
     recommended: {
-      title: "Recommended for Fall",
+      title: "Recommended for Fall 2026",
       credits: 0,
       courses: [],
     },
-    spring: {
-      title: "Later (Spring)",
+    later: {
+      title: "Later",
       credits: 0,
       courses: [],
     }
@@ -47,7 +56,7 @@ export default function SessionPage() {
   const recognitionRef = useRef<any>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load transcript data into the first column on mount
+  // Load transcript data into columns on mount
   useEffect(() => {
     if (typeof window === "undefined") return;
     const raw = sessionStorage.getItem("transcriptData");
@@ -56,7 +65,7 @@ export default function SessionPage() {
         const t = JSON.parse(raw);
         const validCourses = (t.completed_courses || []).filter((c: any) => c.grade !== "W");
         
-        // Populate specific context for the LLM
+        // Build transcript context for LLM
         const courseListText = validCourses
           .map((c: any) => `${c.course_code} (${c.course_name}, grade: ${c.grade}, ${c.semester})`)
           .join("; ");
@@ -69,27 +78,56 @@ export default function SessionPage() {
           `Completed Courses: ${courseListText}`,
         ].join("\n");
 
-        // Populate board UI
-        const mappedCourses: Course[] = validCourses.slice(-5).map((c: any) => ({
-          id: c.course_code + "-" + Math.random().toString(36).substr(2, 9),
-          code: c.course_code,
-          title: c.course_name,
-          professor: `Grade: ${c.grade}`,
-          badge: "Core Requirement",
-          whyText: `Completed in ${c.semester}.`,
-        }));
-        
+        // Separate in-progress (IP grade or current semester) from completed
+        const inProgressCourses: Course[] = [];
+        const completedBySemester: Record<string, Course[]> = {};
+
+        validCourses.forEach((c: any) => {
+          const course: Course = {
+            id: c.course_code + "-" + Math.random().toString(36).substr(2, 9),
+            code: c.course_code,
+            title: c.course_name,
+            professor: `Grade: ${c.grade}`,
+            badge: "Core Requirement",
+            whyText: `${c.semester}`,
+          };
+
+          if (c.grade === "IP" || c.grade === "CR") {
+            inProgressCourses.push(course);
+          } else {
+            const sem = c.semester || "Unknown";
+            if (!completedBySemester[sem]) completedBySemester[sem] = [];
+            completedBySemester[sem].push(course);
+          }
+        });
+
+        // Set in-progress column
+        const ipCredits = inProgressCourses.length * 3;
         setColumns(prev => ({
           ...prev,
-          completed: {
-            ...prev.completed,
-            credits: Math.round(t.total_credit_hours),
-            courses: mappedCourses,
-          }
+          inProgress: {
+            ...prev.inProgress,
+            credits: ipCredits,
+            courses: inProgressCourses,
+          },
         }));
+
+        // Set previous semesters
+        setPreviousSemesters(completedBySemester);
       } catch {}
     }
   }, []);
+
+  // Update recommended column title when target semester changes
+  useEffect(() => {
+    setColumns(prev => ({
+      ...prev,
+      recommended: {
+        ...prev.recommended,
+        title: `Recommended for ${targetSemester}`,
+      }
+    }));
+  }, [targetSemester]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -210,26 +248,38 @@ export default function SessionPage() {
     startChat();
   }, []);
 
-  // Helper to parse course codes from AI text and fetch details 
+  // Detect semester from user text (e.g. "Fall 2026", "Spring 2027")
+  const detectTargetSemester = (text: string) => {
+    const matches = text.match(SEMESTER_REGEX);
+    if (matches && matches.length > 0) {
+      // Capitalize properly: "fall 2026" -> "Fall 2026"
+      const raw = matches[matches.length - 1];
+      const parts = raw.trim().split(/\s+/);
+      const season = parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
+      let year = parts[1] || "";
+      if (year.length === 2) year = "20" + year;
+      const formatted = `${season} ${year}`;
+      setTargetSemester(formatted);
+    }
+  };
+
+  // Helper to parse course codes from AI text and add to recommended
   const extractAndAddCourses = async (text: string) => {
     const matches = Array.from(text.matchAll(COURSE_REGEX)).map(m => m[0].toUpperCase());
     const uniqueCodes = Array.from(new Set(matches));
 
     if (uniqueCodes.length === 0) return;
 
-    // Check what we already have
     setColumns((prevCols) => {
       const allExisting = Object.values(prevCols).flatMap(col => col.courses.map((c: any) => c.code));
       const newCodes = uniqueCodes.filter(code => !allExisting.includes(code));
       
       if (newCodes.length === 0) return prevCols;
 
-      // In a real app, we would fetch details from /api/courses/{code}
-      // For this hackathon demo, we will create mock cards for the detected codes
       const newCourses = newCodes.map(code => ({
         id: code + "-" + Math.random().toString(36).substr(2, 9),
         code: code,
-        title: "Recommended Course", // Placeholder, would fetch real
+        title: "Recommended Course",
         professor: "TBD",
         badge: "Core Requirement" as const,
         whyText: "Matches your career interests and degree plan.",
@@ -253,6 +303,9 @@ export default function SessionPage() {
     setIsLoading(true);
     setAdvisorStatus("speaking");
     setIsSpeaking(true);
+
+    // Detect target semester from user message
+    detectTargetSemester(userText);
 
     // End session after ~4 interactions
     if (messageCount.current >= 4) {
@@ -314,6 +367,11 @@ export default function SessionPage() {
     document.body.removeChild(a);
   }, [columns]);
 
+  const semesterKeys = Object.keys(previousSemesters).sort();
+  const totalCompletedCredits = semesterKeys.reduce(
+    (sum, key) => sum + previousSemesters[key].length * 3, 0
+  );
+
   return (
     <div className="min-h-screen bg-background flex flex-col pt-24 pb-12 px-8">
       <div className="max-w-7xl mx-auto w-full flex flex-col items-center">
@@ -341,6 +399,57 @@ export default function SessionPage() {
            )}
         </div>
 
+        {/* Expandable Previous Semesters */}
+        {semesterKeys.length > 0 && (
+          <div className="w-full mb-6">
+            <button
+              onClick={() => setShowPrevious(!showPrevious)}
+              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors mb-4"
+            >
+              {showPrevious ? (
+                <ChevronDown className="w-4 h-4" />
+              ) : (
+                <ChevronRight className="w-4 h-4" />
+              )}
+              <span className="font-[var(--font-heading)] font-semibold text-sm" style={{ fontFamily: "'Figtree', sans-serif" }}>
+                Previous Semesters ({totalCompletedCredits} credits completed)
+              </span>
+            </button>
+
+            {showPrevious && (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-8 animate-in slide-in-from-top-2 duration-300">
+                {semesterKeys.map((sem) => (
+                  <div
+                    key={sem}
+                    className="bg-[#141428]/40 border border-green-500/20 rounded-xl p-4"
+                  >
+                    <h3
+                      className="font-[var(--font-heading)] font-bold text-sm text-green-400 mb-3"
+                      style={{ fontFamily: "'Figtree', sans-serif" }}
+                    >
+                      {sem}
+                    </h3>
+                    <div className="flex flex-col gap-2">
+                      {previousSemesters[sem].map((course) => (
+                        <div
+                          key={course.id}
+                          className="flex items-center justify-between px-3 py-2 bg-green-500/5 rounded-lg border border-green-500/10"
+                        >
+                          <div className="flex flex-col">
+                            <span className="text-xs font-semibold text-green-400">{course.code}</span>
+                            <span className="text-[11px] text-muted-foreground truncate max-w-[160px]">{course.title}</span>
+                          </div>
+                          <span className="text-[10px] text-green-500/70">{course.professor.replace("Grade: ", "")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Below Avatar: Drag and Drop Interactive Board */}
         <div className="w-full">
            <DndBoard columns={columns} setColumns={setColumns} />
@@ -348,7 +457,7 @@ export default function SessionPage() {
 
       </div>
 
-      {/* Floating Export Button, fades in at the end of the conversation */}
+      {/* Floating Export Button */}
       <div className={`fixed bottom-12 right-12 transition-all duration-1000 z-50 ${sessionEnded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none'}`}>
          <button onClick={handleExportPlan} className="px-6 py-4 rounded-xl bg-orange text-foreground font-[var(--font-heading)] font-semibold text-lg flex items-center gap-3 shadow-[0_0_30px_rgba(232,119,34,0.3)] hover:scale-105 transition-all">
            <Download className="w-5 h-5" />

@@ -36,6 +36,7 @@ interface ColumnProps {
   credits: number;
   courses: Course[];
   isCompleted?: boolean;
+  isInProgress?: boolean;
 }
 
 // Draggable Sortable Item Wrapper
@@ -72,16 +73,19 @@ function SortableCourseCard({ course, isCompleted, index }: { course: Course, is
 }
 
 // Droppable Column Component
-function DndColumn({ id, title, credits, courses, isCompleted }: ColumnProps) {
+function DndColumn({ id, title, credits, courses, isCompleted, isInProgress }: ColumnProps) {
+  const borderColor = isInProgress ? "border-amber-500/30" : isCompleted ? "border-green-500/20" : "border-violet/10";
   return (
-    <div className="flex flex-col bg-[#141428]/40 border border-violet/10 rounded-xl p-6 min-h-[400px]">
+    <div className={`flex flex-col bg-[#141428]/40 border ${borderColor} rounded-xl p-6 min-h-[400px]`}>
       <div className="mb-6 flex justify-between items-end">
         <div>
           <h2
-            className="font-[var(--font-heading)] font-black text-xl tracking-[-0.02em] text-foreground"
+            className={`font-[var(--font-heading)] font-black text-xl tracking-[-0.02em] ${
+              isInProgress ? "text-amber-400" : isCompleted ? "text-green-400" : "text-foreground"
+            }`}
             style={{ fontFamily: "'Figtree', sans-serif" }}
           >
-            {title}
+            {isInProgress && "🟡 "}{title}
           </h2>
           <p className="text-muted-foreground text-sm mt-1">{credits} credits</p>
         </div>
@@ -245,6 +249,7 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
             credits={columns[colId].credits}
             courses={columns[colId].courses}
             isCompleted={columns[colId].isCompleted}
+            isInProgress={columns[colId].isInProgress}
           />
         ))}
       </div>
