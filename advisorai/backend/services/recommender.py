@@ -67,11 +67,18 @@ def generate_recommendations(
     # Get completed course codes (passing grades only)
     completed_codes = [
         c.course_code for c in transcript.completed_courses
-        if c.grade not in ("W", "WL", "WF", "F", "IP", "I", "NP", "NF", "NC")
+        if c.grade not in ("W", "WL", "WF", "F", "I", "NP", "NF", "NC")
     ]
+    # IP (In Progress) courses count as "taken" — don't recommend them again
+    in_progress_codes = [
+        c.course_code for c in transcript.completed_courses
+        if c.grade == "IP"
+    ]
+    # Combine both so neither completed nor in-progress courses get recommended
+    all_taken_codes = completed_codes + in_progress_codes
 
-    # Get courses available to take next (prereqs met, not completed)
-    available = get_available_courses(plan, completed_codes)
+    # Get courses available to take next (prereqs met, not completed/in-progress)
+    available = get_available_courses(plan, all_taken_codes)
 
     if not available:
         logger.info("No remaining required courses found. Suggesting tech electives.")

@@ -138,7 +138,7 @@ export default function SessionPage() {
           id: r.course_code + "-rec-" + Math.random().toString(36).substr(2, 9),
           code: r.course_code,
           title: r.course_name,
-          professor: `Confidence: ${Math.round(r.confidence_score * 100)}%`,
+          professor: targetSemester || "Next Semester",
           badge: "Core Requirement" as const,
           whyText: r.reason,
         }));
@@ -161,6 +161,7 @@ export default function SessionPage() {
 
   // Update recommended column title when target semester changes
   useEffect(() => {
+    if (!targetSemester) return;
     setColumns(prev => ({
       ...prev,
       recommended: {
