@@ -60,32 +60,6 @@ export function VoiceOrb({
           
           setInterimTranscript(latestTranscript);
 
-          // INTERRUPT LOGIC & SELF-HEARING PREVENTION
-          if (audioRef.current && !audioRef.current.paused) {
-            const finalUserText = latestTranscript.trim().toLowerCase();
-            const currentAiText = aiTextRef.current.toLowerCase();
-            
-            // Strip punctuation and normalize spaces for robust matching
-            const stripPunc = (s: string) => s.replace(/[^\w\s\']|_/g, "").replace(/\s+/g, " ");
-            const cleanUser = stripPunc(finalUserText);
-            const cleanAi = stripPunc(currentAiText);
-
-            if (cleanUser.length < 4) {
-               // Too short to judge if it's an echo or interrupt, ignore for now
-               return; 
-            }
-
-            if (cleanAi.includes(cleanUser)) {
-               // The mic is just hearing the laptop speakers (echoing the AI)
-               // Ignore this input completely so we don't interrupt ourselves
-               return;
-            }
-
-            // If we reach here, the text diverged from the AI transcript -> INTERRUPT!
-            stopAudioPlayback();
-            setOrbState("LISTENING");
-          }
-
           // Reset silence timer
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
           
@@ -93,7 +67,7 @@ export function VoiceOrb({
              // 1.5s of silence detected
              const finalUserText = latestTranscript.trim();
              if (finalUserText) {
-               handleSendMessage(finalUserText, !!audioRef.current && !audioRef.current.paused);
+               handleSendMessage(finalUserText, false); // Turn-taking means no mid-speech interrupts
                setInterimTranscript("");
              }
           }, 1500);
@@ -175,12 +149,9 @@ export function VoiceOrb({
         URL.revokeObjectURL(url);
         if (isComponentMounted.current) {
           setOrbState("LISTENING");
-          // Flush the recognition buffer so the echoed text isn't sent as a new message
+          // Turn mic back on for user's turn
           if (recognitionRef.current) { 
-             try { 
-               recognitionRef.current.abort(); 
-               setTimeout(() => recognitionRef.current.start(), 50);
-             } catch {} 
+             try { recognitionRef.current.start(); } catch {} 
           }
         }
       };
@@ -190,23 +161,22 @@ export function VoiceOrb({
         if (isComponentMounted.current) {
           setOrbState("LISTENING");
           if (recognitionRef.current) { 
-             try { 
-               recognitionRef.current.abort(); 
-               setTimeout(() => recognitionRef.current.start(), 50);
-             } catch {} 
+             try { recognitionRef.current.start(); } catch {} 
           }
         }
       };
 
-      setTimeout(() => {
-        if (isComponentMounted.current && recognitionRef.current) {
-          try { recognitionRef.current.start(); } catch {}
-        }
-      }, 100);
+      // Turn OFF the mic while the audio plays to prevent echo loops
+      if (recognitionRef.current) {
+         try { recognitionRef.current.abort(); } catch {}
+      }
 
       await audio.play().catch((e) => {
         console.warn("Autoplay blocked", e);
-        if (isComponentMounted.current) setOrbState("LISTENING");
+        if (isComponentMounted.current) {
+          setOrbState("LISTENING");
+          if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
+        }
       });
     } catch (e) {
       console.warn("ElevenLabs TTS failed, using browser fallback:", e);
@@ -233,12 +203,10 @@ export function VoiceOrb({
         stopAudioPlayback();
         window.speechSynthesis.speak(utterance);
 
-        // Still want to let them interrupt the browser TTS
-        setTimeout(() => {
-          if (isComponentMounted.current && recognitionRef.current) {
-            try { recognitionRef.current.start(); } catch {}
-          }
-        }, 100);
+        // Turn OFF the mic while the audio plays to prevent echo loops
+        if (recognitionRef.current) {
+           try { recognitionRef.current.abort(); } catch {}
+        }
       } else {
         setOrbState("LISTENING");
         if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
@@ -276,6 +244,14 @@ export function VoiceOrb({
           console.warn("Recognition start error", e);
         }
       }
+    } else if (orbState === "SPEAKING") {
+      // TAP TO INTERRUPT
+      stopAudioPlayback();
+      setOrbState("LISTENING");
+      setAiText("");
+      if (recognitionRef.current) {
+        try { recognitionRef.current.start(); } catch {}
+      }
     } else {
       stopAll();
     }
@@ -284,9 +260,7 @@ export function VoiceOrb({
   const handleSendMessage = async (text: string, wasInterrupted: boolean) => {
     if (!text.trim() || orbState === "THINKING") return;
 
-    // We only stop the microphone listener completely if we are transitioning to thinking
-    // Actually, keep it running so interrupts work? Wait, we only want interrupts during SPEAKING.
-    // During THINKING, we should probably pause recognition or ignore it.
+    // Transition to thinking, pause mic
     if (recognitionRef.current) {
       try { recognitionRef.current.abort(); } catch {}
     }
@@ -356,6 +330,9 @@ export function VoiceOrb({
       >
         {orbState === "IDLE" && (
           <span className="text-white/50 text-xs font-semibold uppercase tracking-wider">Tap</span>
+        )}
+        {orbState === "SPEAKING" && (
+          <span className="text-white/60 text-[10px] font-semibold uppercase tracking-wider absolute opacity-0 hover:opacity-100 transition-opacity">Interrupt</span>
         )}
       </div>
 
