@@ -254,6 +254,7 @@ export default function SessionPage() {
         isPlayingRef.current = false;
         setIsSpeaking(false);
         setAdvisorStatus("listening");
+        // startListening is no longer passed as onEnded, because mic stays on
         if (onEnded) onEnded();
       };
 
@@ -320,10 +321,12 @@ export default function SessionPage() {
         if (res.ok) {
           const data = await res.json();
           chatHistory.current = data.history;
-          playAudio(data.reply, startListening);
+          startListening(); // Turn on mic FIRST
+          playAudio(data.reply);
         }
       } catch (err) {
-        playAudio("Hey! I'm Comet Advisor. What courses are you thinking about?", startListening);
+        startListening(); // Turn on mic FIRST
+        playAudio("Hey! I'm Comet Advisor. What courses are you thinking about?");
       }
     };
     startChat();
@@ -461,12 +464,12 @@ export default function SessionPage() {
         // Parse the advisor's text and update board
         await extractAndAddCourses(data.reply);
 
-        playAudio(data.reply, startListening);
+        playAudio(data.reply);
       } else {
-        playAudio("I had trouble understanding that. Could you try again?", startListening);
+        playAudio("I had trouble understanding that. Could you try again?");
       }
     } catch (err) {
-      playAudio("I'm having trouble connecting. Please try again.", startListening);
+      playAudio("I'm having trouble connecting. Please try again.");
     }
 
     setIsLoading(false);
