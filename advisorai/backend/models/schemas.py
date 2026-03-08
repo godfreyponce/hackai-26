@@ -59,6 +59,7 @@ class TranscriptData(BaseModel):
     student_id: Optional[str] = None
     major: str
     total_credit_hours: float
+    minor: Optional[str] = None
     gpa: float
     completed_courses: List[CompletedCourse]
 

@@ -74,10 +74,11 @@ export default function SessionPage() {
           `Student Name: ${t.student_name}`,
           `Student ID: ${t.student_id}`,
           `Major: ${t.major}`,
+          t.minor ? `Minor: ${t.minor}` : null,
           `GPA: ${t.gpa}`,
           `Total Credit Hours: ${t.total_credit_hours}`,
           `Completed Courses: ${courseListText}`,
-        ].join("\n");
+        ].filter(Boolean).join("\n");
 
         // Separate in-progress (IP grade or current semester) from completed
         const inProgressCourses: Course[] = [];
@@ -222,6 +223,9 @@ export default function SessionPage() {
   }, []);
 
   const playAudio = async (text: string, onEnded?: () => void) => {
+    setAdvisorStatus("speaking");
+    setIsSpeaking(true);
+
     try {
       const res = await fetch("/api/speak", {
         method: "POST",
@@ -239,26 +243,51 @@ export default function SessionPage() {
       const audio = new Audio(url);
       audioRef.current = audio;
 
-      setAdvisorStatus("speaking");
-      setIsSpeaking(true);
-
       audio.onended = () => {
         setIsSpeaking(false);
-        setAdvisorStatus("listening");
+        setAdvisorStatus("idle");
         if (onEnded) onEnded();
       };
 
-      await audio.play().catch(e => {
-        console.warn("Autoplay was blocked by browser:", e);
+      audio.onerror = () => {
         setIsSpeaking(false);
-        setAdvisorStatus("listening");
+        setAdvisorStatus("idle");
         if (onEnded) onEnded();
+      };
+
+      await audio.play().catch(() => {
+        // Autoplay blocked — fall back to browser TTS
+        fallbackSpeak(text, onEnded);
       });
 
     } catch (error) {
-      console.error("Audio playback error:", error);
+      // ElevenLabs failed — fall back to browser speech
+      console.warn("ElevenLabs failed, using browser TTS");
+      fallbackSpeak(text, onEnded);
+    }
+  };
+
+  // Browser-native TTS fallback
+  const fallbackSpeak = (text: string, onEnded?: () => void) => {
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        setAdvisorStatus("idle");
+        if (onEnded) onEnded();
+      };
+      utterance.onerror = () => {
+        setIsSpeaking(false);
+        setAdvisorStatus("idle");
+        if (onEnded) onEnded();
+      };
+      window.speechSynthesis.speak(utterance);
+    } else {
+      // No TTS available at all — just move on
       setIsSpeaking(false);
-      setAdvisorStatus("listening");
+      setAdvisorStatus("idle");
       if (onEnded) onEnded();
     }
   };
@@ -379,6 +408,9 @@ export default function SessionPage() {
       if (res.ok) {
         const data = await res.json();
         chatHistory.current = data.history;
+
+        // Also detect semester from AI response
+        detectTargetSemester(data.reply);
 
         playAudio(data.reply, () => {
           if (!sessionEnded && messageCount.current < 4) {

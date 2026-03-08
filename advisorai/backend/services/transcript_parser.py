@@ -189,10 +189,17 @@ class TranscriptParser:
             f"GPA {gpa} | {len(courses)} courses | {total_hours} hrs"
         )
 
+        # ── Minor (optional) ──
+        minor_match = RE_MINOR.search(text)
+        minor = minor_match.group(1).strip() if minor_match else None
+        if minor:
+            logger.info(f"Minor detected: {minor}")
+
         return TranscriptData(
             student_name=student_name.strip(),
             student_id=student_id,
             major=major.strip(),
+            minor=minor,
             total_credit_hours=total_hours,
             gpa=gpa,
             completed_courses=courses,
