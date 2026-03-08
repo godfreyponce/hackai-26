@@ -27,7 +27,10 @@ export function SemesterColumn({
     <div className="flex flex-col">
       {/* Header */}
       <div className="mb-6">
-        <h2 className="font-[var(--font-heading)] font-black text-xl tracking-[-0.02em] text-foreground">
+        <h2 
+          className="font-[var(--font-heading)] font-black text-xl tracking-[-0.02em] text-foreground"
+          style={{ fontFamily: "'Figtree', sans-serif" }}
+        >
           {title}
         </h2>
         <p className="text-muted-foreground text-sm mt-1">

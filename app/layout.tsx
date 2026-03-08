@@ -1,15 +1,9 @@
 import type { Metadata } from 'next'
-import { Space_Grotesk, DM_Sans } from 'next/font/google'
+import { DM_Sans } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { Navbar } from '@/components/navbar'
 import { StarField } from '@/components/star-field'
 import './globals.css'
-
-const spaceGrotesk = Space_Grotesk({ 
-  subsets: ["latin"],
-  variable: '--font-heading',
-  display: 'swap',
-});
 
 const dmSans = DM_Sans({ 
   subsets: ["latin"],
@@ -18,7 +12,7 @@ const dmSans = DM_Sans({
 });
 
 export const metadata: Metadata = {
-  title: 'Nebula Advisor | AI Academic Advisor for UTD Students',
+  title: 'Comet Advisor | AI Academic Advisor for UTD Students',
   description: 'Your AI academic advisor, available 24/7. No appointment needed. Built for UTD students by Nebula Labs.',
   generator: 'v0.app',
   icons: {
@@ -46,7 +40,10 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`${spaceGrotesk.variable} ${dmSans.variable}`}>
+    <html lang="en" className={`${dmSans.variable}`}>
+      <head>
+        <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;800&display=swap" rel="stylesheet" />
+      </head>
       <body className="font-sans antialiased bg-background text-foreground">
         <StarField />
         <Navbar />

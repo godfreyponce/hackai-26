@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { StepProgress } from "@/components/step-progress";
 import { AIAvatar } from "@/components/ai-avatar";
 import { ConversationFeed } from "@/components/conversation-feed";
+import { useRouter } from "next/navigation";
 
 interface Message {
   id: string;
@@ -18,6 +19,7 @@ const ADVISOR_QUESTIONS = [
 ];
 
 export default function SessionPage() {
+  const router = useRouter();
   const [currentStep, setCurrentStep] = useState(1);
   const [messages, setMessages] = useState<Message[]>([
     { id: "1", content: ADVISOR_QUESTIONS[0], isAdvisor: true },
@@ -100,13 +102,12 @@ export default function SessionPage() {
           </div>
         </div>
 
-        {/* Bottom CTA - appears after Step 3 */}
-        <div
-          className={`p-8 border-t border-violet/10 transition-all duration-500 ${
-            isComplete ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"
-          }`}
-        >
-          <button className="w-full py-4 rounded-full bg-gradient-to-r from-purple to-teal text-foreground font-[var(--font-heading)] font-semibold text-lg hover:opacity-90 transition-opacity">
+        {/* Bottom CTA - always appears */}
+        <div className="p-8 border-t border-violet/10">
+          <button 
+            onClick={() => router.push('/plan')}
+            className="w-full py-4 rounded-full bg-[#7B2FBE] text-foreground font-[var(--font-heading)] font-semibold text-lg hover:bg-[#9B5DE5] transition-colors"
+          >
             Generate My Plan →
           </button>
         </div>

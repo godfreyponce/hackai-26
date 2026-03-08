@@ -1,12 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { UploadBox } from "./upload-box";
 import { ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function HeroSection() {
   const [isFileUploaded, setIsFileUploaded] = useState(false);
+  const router = useRouter();
+
+  const handleStartSession = () => {
+    router.push('/session');
+  };
 
   return (
     <section className="relative min-h-screen flex flex-col items-center justify-center px-8 pt-20">
@@ -17,7 +23,10 @@ export function HeroSection() {
         </p>
 
         {/* Headline */}
-        <h1 className="font-[var(--font-heading)] text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-[-0.02em] bg-gradient-to-r from-[#7B6FE8] to-[#E8837B] bg-clip-text text-transparent text-balance leading-tight">
+        <h1 
+          className="font-[var(--font-heading)] text-5xl md:text-6xl lg:text-7xl font-semibold tracking-[-0.02em] bg-gradient-to-r from-[#7B6FE8] to-[#E8837B] bg-clip-text text-transparent text-balance leading-tight"
+          style={{ fontFamily: "'Figtree', sans-serif" }}
+        >
           Your AI Academic Advisor
         </h1>
 
@@ -34,13 +43,10 @@ export function HeroSection() {
         {/* CTA Button */}
         <div className="pt-4">
           <button
-            disabled={!isFileUploaded}
+            onClick={handleStartSession}
             className={cn(
               "inline-flex items-center gap-2 px-8 py-4 rounded-full font-semibold text-lg transition-all duration-300",
-              "bg-gradient-to-r from-purple to-teal text-foreground",
-              "disabled:opacity-40 disabled:cursor-not-allowed disabled:scale-100",
-              "enabled:hover:scale-105 enabled:hover:shadow-[0_0_40px_rgba(123,47,190,0.5)]",
-              "enabled:active:scale-95"
+              "bg-[#7B2FBE] hover:bg-[#9B5DE5] text-foreground hover:scale-105 hover:shadow-[0_0_40px_rgba(123,47,190,0.5)] active:scale-95",
             )}
           >
             Start Session
