@@ -66,7 +66,7 @@ export function ConversationFeed({
             onClick={onMicToggle}
             className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 ${
               isRecording
-                ? "bg-teal text-background animate-mic-pulse"
+                ? "bg-teal text-background animate-pulse shadow-[0_0_15px_rgba(0,194,203,0.5)] ring-2 ring-teal"
                 : "bg-[#141428]/80 border border-teal/30 text-teal hover:bg-teal/10 hover:border-teal"
             }`}
             aria-label={isRecording ? "Stop recording" : "Start recording"}
@@ -86,6 +86,7 @@ export function ConversationFeed({
 
           {/* Send button */}
           <button
+            id="send-btn"
             onClick={onSend}
             disabled={!inputValue.trim()}
             className="flex-shrink-0 w-12 h-12 rounded-full bg-gradient-to-r from-purple to-teal flex items-center justify-center text-foreground transition-all duration-300 hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"

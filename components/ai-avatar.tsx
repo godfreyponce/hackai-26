@@ -2,7 +2,7 @@
 
 interface AIAvatarProps {
   isSpeaking: boolean;
-  status: "listening" | "speaking";
+  status: "listening" | "speaking" | "idle";
 }
 
 export function AIAvatar({ isSpeaking, status }: AIAvatarProps) {
@@ -45,10 +45,10 @@ export function AIAvatar({ isSpeaking, status }: AIAvatarProps) {
         </span>
         <span
           className={`text-sm font-sans transition-colors duration-300 ${
-            status === "speaking" ? "text-violet" : "text-teal"
+            status === "speaking" ? "text-violet" : status === "listening" ? "text-teal" : "text-muted-foreground"
           }`}
         >
-          {status === "speaking" ? "Speaking..." : "Listening..."}
+          {status === "speaking" ? "Speaking..." : status === "listening" ? "Listening..." : ""}
         </span>
       </div>
     </div>
