@@ -38,6 +38,7 @@ export function VoiceOrb({
   const chatHistory = useRef<HistoryMessage[]>([]);
   const isComponentMounted = useRef(true);
   const transcriptCtxRef = useRef(transcriptContext);
+  const ignoreAudioRef = useRef(false); // STIRCT TURN-TAKING LOCK
 
   // Sync transcript context so the closure always has the latest
   useEffect(() => {
@@ -59,6 +60,9 @@ export function VoiceOrb({
         recognition.lang = "en-US";
 
         recognition.onresult = (event: any) => {
+          // STRICT TURN TAKING: Ignore any events that fired while speaking
+          if (ignoreAudioRef.current || orbState === "SPEAKING" || orbState === "THINKING") return;
+
           let latestTranscript = "";
           for (let i = 0; i < event.results.length; i++) {
             latestTranscript += event.results[i][0].transcript;
@@ -111,6 +115,7 @@ export function VoiceOrb({
             setAiText(data.reply);
             aiTextRef.current = data.reply;
             onAIResponse(data.reply);
+            ignoreAudioRef.current = true; // Lock before playing
             playAudioResponse(data.reply);
           }
         }
@@ -119,6 +124,7 @@ export function VoiceOrb({
           const fallbackMsg = "Hey! I'm Comet Advisor. How can I help you plan your courses?";
           setAiText(fallbackMsg);
           aiTextRef.current = fallbackMsg;
+          ignoreAudioRef.current = true; // Lock before playing
           playAudioResponse(fallbackMsg);
         }
       }
@@ -136,6 +142,13 @@ export function VoiceOrb({
   const playAudioResponse = async (text: string) => {
     try {
       setOrbState("SPEAKING");
+      ignoreAudioRef.current = true;
+      
+      // Force mic off
+      if (recognitionRef.current) {
+         try { recognitionRef.current.abort(); } catch {}
+      }
+
       // The speak endpoint is a Next.js route, not the Python backend
       const audioRes = await fetch(`/api/speak`, {
         method: "POST",
@@ -154,7 +167,9 @@ export function VoiceOrb({
       audio.onended = () => {
         URL.revokeObjectURL(url);
         if (isComponentMounted.current) {
+          ignoreAudioRef.current = false;
           setOrbState("LISTENING");
+          setAiText("");
           // Turn mic back on for user's turn
           if (recognitionRef.current) { 
              try { recognitionRef.current.start(); } catch {} 
@@ -165,21 +180,19 @@ export function VoiceOrb({
       audio.onerror = () => {
         URL.revokeObjectURL(url);
         if (isComponentMounted.current) {
+          ignoreAudioRef.current = false;
           setOrbState("LISTENING");
+          setAiText("");
           if (recognitionRef.current) { 
              try { recognitionRef.current.start(); } catch {} 
           }
         }
       };
 
-      // Turn OFF the mic while the audio plays to prevent echo loops
-      if (recognitionRef.current) {
-         try { recognitionRef.current.abort(); } catch {}
-      }
-
       await audio.play().catch((e) => {
         console.warn("Autoplay blocked", e);
         if (isComponentMounted.current) {
+          ignoreAudioRef.current = false;
           setOrbState("LISTENING");
           if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
         }
@@ -188,32 +201,38 @@ export function VoiceOrb({
       console.warn("ElevenLabs TTS failed, using browser fallback:", e);
       // Fallback to browser TTS
       if (typeof window !== "undefined" && window.speechSynthesis) {
+        ignoreAudioRef.current = true;
         setOrbState("SPEAKING");
+        
+        if (recognitionRef.current) {
+           try { recognitionRef.current.abort(); } catch {}
+        }
+        
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 1.05;
         
         utterance.onend = () => {
           if (isComponentMounted.current) {
+            ignoreAudioRef.current = false;
             setOrbState("LISTENING");
+            setAiText("");
             if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
           }
         };
         
         utterance.onerror = () => {
           if (isComponentMounted.current) {
+            ignoreAudioRef.current = false;
             setOrbState("LISTENING");
+            setAiText("");
             if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
           }
         };
 
         stopAudioPlayback();
         window.speechSynthesis.speak(utterance);
-
-        // Turn OFF the mic while the audio plays to prevent echo loops
-        if (recognitionRef.current) {
-           try { recognitionRef.current.abort(); } catch {}
-        }
       } else {
+        ignoreAudioRef.current = false;
         setOrbState("LISTENING");
         if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
       }
@@ -244,20 +263,16 @@ export function VoiceOrb({
   const toggleMic = () => {
     if (orbState === "IDLE") {
       setOrbState("LISTENING");
+      ignoreAudioRef.current = false;
       setAiText("");
       if (recognitionRef.current) {
         try { recognitionRef.current.start(); } catch (e) {
           console.warn("Recognition start error", e);
         }
       }
-    } else if (orbState === "SPEAKING") {
-      // TAP TO INTERRUPT
-      stopAudioPlayback();
-      setOrbState("LISTENING");
-      setAiText("");
-      if (recognitionRef.current) {
-        try { recognitionRef.current.start(); } catch {}
-      }
+    } else if (orbState === "SPEAKING" || orbState === "THINKING") {
+      // Intentionally disable clicking orb while it's processing to keep it simple.
+      return;
     } else {
       stopAll();
     }
@@ -267,12 +282,14 @@ export function VoiceOrb({
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     if (!text.trim() || orbState !== "LISTENING") return;
 
-    // Transition to thinking, pause mic
+    // Transition to thinking, pause mic completely
+    ignoreAudioRef.current = true;
     if (recognitionRef.current) {
       try { recognitionRef.current.abort(); } catch {}
     }
 
     setOrbState("THINKING");
+    setInterimTranscript("");
     onUserSpeech(text); // Notify parent for target semester detection
 
     try {
@@ -337,9 +354,6 @@ export function VoiceOrb({
       >
         {orbState === "IDLE" && (
           <span className="text-white/50 text-xs font-semibold uppercase tracking-wider">Tap</span>
-        )}
-        {orbState === "SPEAKING" && (
-          <span className="text-white/60 text-[10px] font-semibold uppercase tracking-wider absolute opacity-0 hover:opacity-100 transition-opacity">Interrupt</span>
         )}
       </div>
 
