@@ -97,36 +97,72 @@ CS_DEGREE_PLAN = {
         },
     },
     "prerequisite_chains": {
+        # ─── Verified against official CS Flowchart 2025-2026 ───
         # Math chain
-        "MATH 2414": ["MATH 2413"],
-        "MATH 2419": ["MATH 2417"],
-        "MATH 2418": ["MATH 2414"],
+        "MATH 2414": ["MATH 2413"],       # Calc II requires Calc I
+        "MATH 2419": ["MATH 2417"],       # Calc II alt requires Calc I alt
+        "MATH 2418": ["MATH 2413"],       # Linear Algebra requires Calc I (NOT Calc II)
         # Physics chain
-        "PHYS 2325": ["MATH 2413"],
-        "PHYS 2326": ["PHYS 2325"],
-        "PHYS 2125": ["PHYS 2325"],
-        "PHYS 2126": ["PHYS 2326"],
-        # CS chain - lower division
-        "CS 1337": ["CS 1436"],
-        "CS 2336": ["CS 1337"],
-        "CS 2337": ["CS 1337"],
-        "CS 2305": ["CS 1337"],
-        "CS 2340": ["CS 2336"],
-        # CS chain - upper division
-        "CS 3341": ["CS 2305", "MATH 2418"],
-        "CS 3345": ["CS 2336", "CS 2305"],
-        "CS 3377": ["CS 2336"],
-        "CS 3354": ["CS 2336", "CS 3345"],
-        "CS 4337": ["CS 2336"],
-        "CS 4341": ["CS 2340"],
-        "CS 4141": ["CS 4341"],
-        "CS 4348": ["CS 3377", "CS 3345"],
-        "CS 4349": ["CS 3345"],
-        "CS 4384": ["CS 3345"],
-        "CS 4347": ["CS 3345"],
-        "CS 4485": ["CS 3354"],
-        "CS 3162": ["CS 3345"],
-        "ECS 2390": ["CS 2336"],
+        "PHYS 2325": ["MATH 2413"],       # Mechanics requires Calc I (coreq: MATH 2414)
+        "PHYS 2125": ["PHYS 2325"],       # Physics Lab I
+        "PHYS 2326": ["PHYS 2325", "MATH 2414"],  # E&M requires Mechanics + Calc II
+        "PHYS 2126": ["PHYS 2326"],       # Physics Lab II
+        # CS chain — Semester 1-2
+        "CS 1337": ["CS 1436"],           # CS I requires Programming Fundamentals
+        "CS 2305": ["MATH 2413"],         # Discrete Math requires Calc I (NOT CS 1337)
+        # CS chain — Semester 3
+        "CS 2336": ["CS 1337"],           # CS II (Java) requires CS I
+        "CS 2337": ["CS 1337"],           # CS II (C++) requires CS I
+        "CS 2340": ["CS 1337", "CS 2305"],  # Architecture requires CS I + Discrete Math
+        # CS chain — Semester 4
+        "ECS 2390": ["RHET 1302"],        # Tech Comm requires RHET (NOT CS 2336)
+        "CS 3341": ["MATH 2414", "CS 2305", "MATH 2418"],  # Stats requires Calc II + Discrete + LinAlg
+        "CS 3345": ["CS 2336", "CS 2305"],  # Data Structures requires CS II + Discrete
+        "CS 3377": ["CS 2336"],           # Systems Programming requires CS II
+        # CS chain — Semester 5
+        "CS 4337": ["CS 2336", "CS 2305", "CS 2340"],  # PL Paradigms requires CS II + Discrete + Architecture
+        "CS 4341": ["PHYS 2326", "CS 2340"],  # Digital Logic requires E&M + Architecture
+        "CS 4141": ["CS 4341"],           # Digital Systems Lab requires Digital Logic
+        "CS 3354": ["CS 2336", "CS 2305", "ECS 2390"],  # Software Eng requires CS II + Discrete + Tech Comm (NOT CS 3345)
+        # CS chain — Semester 6
+        "CS 4349": ["CS 2305", "CS 3345"],  # Adv Algorithms requires Discrete + Data Structures
+        "CS 3162": ["ECS 2390", "GOVT 2305"],  # Prof Responsibility requires Tech Comm + Govt (NOT CS 3345)
+        "CS 4348": ["CS 2340", "CS 3377", "CS 3345"],  # OS requires Architecture + SysProg + DS
+        # CS chain — Semester 7
+        "CS 4384": ["CS 2305"],           # Automata Theory requires Discrete Math (NOT CS 3345)
+        "CS 4347": ["CS 3345"],           # Database Systems requires Data Structures
+        # CS chain — Semester 8
+        "CS 4485": ["CS 3345", "CS 3354"],  # CS Project requires DS + SWE (+ 3 tech electives)
+    },
+    # Corequisites (can be taken at the same time)
+    "corequisites": {
+        "PHYS 2325": ["MATH 2414"],       # Mechanics can be taken WITH Calc II
+    },
+    # Critical path courses (must not be delayed)
+    "critical_path": [
+        "MATH 2413", "CS 1337", "CS 2305", "CS 2336", "CS 3345", "CS 4348",
+    ],
+    # Semester sequence from official UTD CS Flowchart 2025-2026
+    "semester_sequence": {
+        # Semester 1 (Fall Year 1)
+        "CS 1436": 1, "MATH 2413": 1, "MATH 2417": 1,
+        "ECS 1100": 1, "CS 1200": 1,
+        # Semester 2 (Spring Year 1)
+        "CS 1337": 2, "MATH 2414": 2, "MATH 2419": 2,
+        "PHYS 2325": 2, "PHYS 2125": 2, "CS 2305": 2,
+        # Semester 3 (Fall Year 2)
+        "CS 2336": 3, "CS 2337": 3, "CS 2340": 3,
+        "PHYS 2326": 3, "PHYS 2126": 3, "MATH 2418": 3,
+        # Semester 4 (Spring Year 2)
+        "ECS 2390": 4, "CS 3341": 4, "CS 3345": 4, "CS 3377": 4,
+        # Semester 5 (Fall Year 3)
+        "CS 4337": 5, "CS 4341": 5, "CS 4141": 5, "CS 3354": 5,
+        # Semester 6 (Spring Year 3)
+        "CS 4349": 6, "CS 3162": 6, "CS 4348": 6,
+        # Semester 7 (Fall Year 4)
+        "CS 4384": 7, "CS 4347": 7,
+        # Semester 8 (Spring Year 4)
+        "CS 4485": 8,
     },
 }
 
@@ -316,14 +352,22 @@ def get_available_courses(plan: dict, completed_codes: list[str]) -> list[dict]:
     Get courses that can be taken next — required but not completed,
     with all prerequisites satisfied.
 
-    Returns list of {code, category, label, priority} dicts.
+    Uses semester_sequence from the flowchart to prioritize courses
+    from the student's NEXT semester rather than jumping ahead.
+
+    Returns list of {code, category, label, priority, target_semester} dicts.
     """
     completed_set = set(completed_codes)
     remaining = get_remaining_courses(plan, completed_codes)
+    semester_seq = plan.get("semester_sequence", {})
+
+    # Determine student's current semester based on completed courses
+    current_semester = _detect_current_semester(completed_set, semester_seq)
+
     available = []
 
     # Priority order: prep → core → electives
-    priority_map = {
+    category_priority = {
         "major_introductory": 1,
         "major_prep": 2,
         "major_core": 3,
@@ -334,17 +378,48 @@ def get_available_courses(plan: dict, completed_codes: list[str]) -> list[dict]:
 
     for cat_key, courses in remaining.items():
         cat = plan["categories"][cat_key]
-        priority = priority_map.get(cat_key, 5)
+        cat_pri = category_priority.get(cat_key, 5)
 
         for code in courses:
             if check_prereqs_met(code, completed_set, plan):
+                target_sem = semester_seq.get(code, 99)
+                # Semester distance from current (courses in next semester = 0, two ahead = 1, etc.)
+                sem_distance = max(0, target_sem - current_semester)
+
                 available.append({
                     "code": code,
                     "category": cat_key,
                     "label": cat["label"],
-                    "priority": priority,
+                    "priority": cat_pri,
+                    "target_semester": target_sem,
+                    "semester_distance": sem_distance,
                 })
 
-    # Sort by priority (lower = more important)
-    available.sort(key=lambda x: x["priority"])
+    # Sort by: semester distance first (next semester first), then category priority
+    available.sort(key=lambda x: (x["semester_distance"], x["priority"]))
     return available
+
+
+def _detect_current_semester(completed_codes: set[str], semester_seq: dict) -> int:
+    """
+    Detect what semester the student is currently in based on completed courses.
+    Returns the next semester they should take (the one they haven't completed yet).
+    """
+    if not semester_seq:
+        return 1
+
+    # Group courses by semester
+    semesters: dict[int, list[str]] = {}
+    for code, sem in semester_seq.items():
+        semesters.setdefault(sem, []).append(code)
+
+    # Find the first semester where more than half the courses are NOT completed
+    for sem_num in sorted(semesters.keys()):
+        sem_courses = semesters[sem_num]
+        completed_count = sum(1 for c in sem_courses if c in completed_codes)
+        # If less than half completed, this is the current semester
+        if completed_count < len(sem_courses) / 2:
+            return sem_num
+
+    # All semesters mostly complete — they're at the end
+    return max(semesters.keys()) + 1
