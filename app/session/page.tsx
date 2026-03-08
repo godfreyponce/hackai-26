@@ -79,10 +79,11 @@ export default function SessionPage() {
           `Student Name: ${t.student_name}`,
           `Student ID: ${t.student_id}`,
           `Major: ${t.major}`,
+          t.minor ? `Minor: ${t.minor}` : null,
           `GPA: ${t.gpa}`,
           `Total Credit Hours: ${t.total_credit_hours}`,
           `Completed Courses: ${courseListText}`,
-        ].join("\n");
+        ].filter(Boolean).join("\n");
 
         // Store GPA and credits for plan generation
         transcriptGpa.current = t.gpa || null;
@@ -249,11 +250,28 @@ export default function SessionPage() {
       });
 
     } catch (error) {
-      console.error("Audio playback error:", error);
+      console.warn("ElevenLabs failed, using browser TTS");
       isPlayingRef.current = false;
-      setIsSpeaking(false);
-      setAdvisorStatus("listening");
-      if (onEnded) onEnded();
+      // Fall back to browser speech
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.05;
+        utterance.onend = () => {
+          setIsSpeaking(false);
+          setAdvisorStatus("listening");
+          if (onEnded) onEnded();
+        };
+        utterance.onerror = () => {
+          setIsSpeaking(false);
+          setAdvisorStatus("listening");
+          if (onEnded) onEnded();
+        };
+        window.speechSynthesis.speak(utterance);
+      } else {
+        setIsSpeaking(false);
+        setAdvisorStatus("listening");
+        if (onEnded) onEnded();
+      }
     }
   };
 
