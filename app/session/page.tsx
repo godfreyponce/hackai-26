@@ -157,14 +157,22 @@ export default function SessionPage() {
 
           // If the AI is currently speaking and user starts talking, interrupt the AI
           if (isPlayingRef.current) {
-            stopAudio();
+            // Only interrupt if the user actually said a recognizable word, not just noise
+            if (latestTranscript.trim().length > 2) {
+               stopAudio();
+               // We don't want to immediately send just the interrupt word, 
+               // we want to let them finish their thought
+            }
           }
 
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
           silenceTimerRef.current = setTimeout(() => {
-            if (recognitionRef.current) recognitionRef.current.stop();
-            handleSend(latestTranscript);
+            // Only auto-send if AI is NOT speaking, OR if user interrupted
+            if (!isPlayingRef.current) {
+              if (recognitionRef.current) recognitionRef.current.stop();
+              handleSend(latestTranscript);
+            }
           }, 1500);
         };
 
@@ -211,12 +219,10 @@ export default function SessionPage() {
     if (isPlayingRef.current) stopAudio();
     isPlayingRef.current = true;
 
-    // Stop speech recognition so we don't pick up our own audio output
+    // Stop speech recognition timer so we don't auto-send the AI's own audio
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    if (recognitionRef.current) {
-      try { recognitionRef.current.abort(); } catch {}
-    }
-    setIsRecording(false);
+    
+    // We intentionally DO NOT stop recognitionRef here so user can interrupt.
 
     try {
       const res = await fetch("/api/speak", {
