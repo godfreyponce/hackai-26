@@ -463,21 +463,37 @@ async def get_best_professor(subject: str, course_number: str) -> dict | None:
             prof_stats[name]["a_grades"] += a_grades
             prof_stats[name]["total"] += total
 
-    # Find professor with highest A-rate (minimum 30 students)
+    # Find professor with highest A-rate (prefer minimum 30 students, but
+    # fall back to the best available professor when Nebula has only smaller samples).
     best = None
     best_rate = -1.0
+    best_any = None
+    best_any_rate = -1.0
 
     for name, stats in prof_stats.items():
+        rate = stats["a_grades"] / stats["total"]
+        if rate > best_any_rate:
+            best_any_rate = rate
+            best_any = {
+                "name": name,
+                "a_rate": round(rate * 100, 1),
+                "total_students": stats["total"],
+                "low_sample": stats["total"] < 30,
+            }
+
         if stats["total"] < 30:
             continue
-        rate = stats["a_grades"] / stats["total"]
         if rate > best_rate:
             best_rate = rate
             best = {
                 "name": name,
                 "a_rate": round(rate * 100, 1),
                 "total_students": stats["total"],
+                "low_sample": False,
             }
+
+    if best is None:
+        best = best_any
 
     _professor_cache[cache_key] = {"result": best, "ts": time.time()}
     return best

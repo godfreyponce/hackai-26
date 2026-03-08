@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import asyncio
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -212,20 +213,27 @@ class CourseDataStore:
 
         # Dedupe: keep latest catalog_year per course code
         best: dict[str, dict] = {}
+        best_internal: dict[str, dict] = {}
         for c in raw_courses:
             code = f"{c['subject_prefix']} {c['course_number']}"
             year = c.get("catalog_year", "0")
             if code not in best or year > best[code].get("catalog_year", "0"):
                 best[code] = c
 
+            icn = c.get("internal_course_number", "")
+            if icn:
+                if icn not in best_internal or year > best_internal[icn].get("catalog_year", "0"):
+                    best_internal[icn] = c
+
         # Build lookups
         for code, data in best.items():
             info = CourseInfo(data)
             self.courses[code] = info
-            if info.internal_course_number:
-                self.by_internal_id[info.internal_course_number] = code
+        for icn, data in best_internal.items():
+            code = f"{data['subject_prefix']} {data['course_number']}"
+            self.by_internal_id[icn] = code
 
-        # Also build a reverse map for ALL internal IDs (not just latest)
+        # Also build a reverse map for any internal IDs missing from latest mapping
         for c in raw_courses:
             icn = c.get("internal_course_number", "")
             if icn and icn not in self.by_internal_id:
@@ -275,7 +283,14 @@ class CourseDataStore:
 
         if node_type == "course":
             ref = node.get("class_reference", "")
-            code = self.resolve_internal_id(ref)
+            code = None
+            if isinstance(ref, str):
+                ref = ref.strip().upper()
+                direct_match = re.match(r"^([A-Z]{2,4})\s*(\d{4})$", ref)
+                if direct_match:
+                    code = f"{direct_match.group(1)} {direct_match.group(2)}"
+            if not code:
+                code = self.resolve_internal_id(ref)
             if code:
                 result.add(code)
 

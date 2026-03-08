@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { AIAvatar } from "@/components/ai-avatar";
-import { Download, Loader2 } from "lucide-react";
+import { Download, Loader2, Square, LogOut } from "lucide-react";
 import { DndBoard, Course } from "@/components/dnd-board";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -81,6 +81,11 @@ export default function SessionPage() {
   const [displayMinor, setDisplayMinor] = useState<string | null>(null);
   const [showRegenConfirm, setShowRegenConfirm] = useState(false);
   const [regenReason, setRegenReason] = useState("");
+  const [changeNotification, setChangeNotification] = useState<string | null>(null);
+
+  // Minor confirmation flow - show dialog when AI mentions a minor
+  const [showMinorConfirm, setShowMinorConfirm] = useState(false);
+  const [pendingMinor, setPendingMinor] = useState<string | null>(null);
 
   // Prerequisite map for DnD validation (course_code -> [prereq_codes])
   const [prereqMap, setPrereqMap] = useState<Record<string, string[]>>({});
@@ -111,6 +116,9 @@ export default function SessionPage() {
   const recognitionRef = useRef<any>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isPlayingRef = useRef(false); // Guard against audio self-interrupt
+  const ttsAbortRef = useRef<AbortController | null>(null);
+  const synthUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const playRequestIdRef = useRef(0);
   const boardScrollRef = useRef<HTMLDivElement | null>(null); // Scroll container for DnD board
   const handleSendRef = useRef<(text: string) => void>(() => {}); // Always-current handleSend
 
@@ -186,7 +194,7 @@ export default function SessionPage() {
 
         validCourses.forEach((c: any) => {
           const course: Course = {
-            id: c.course_code + "-" + Math.random().toString(36).substr(2, 9),
+            id: c.course_code + "-" + Math.random().toString(36).substring(2, 11),
             code: c.course_code,
             title: c.course_name,
             professor: `Grade: ${c.grade}`,
@@ -358,6 +366,7 @@ export default function SessionPage() {
     // Guard: don't interrupt ongoing playback
     if (isPlayingRef.current) return;
     isPlayingRef.current = true;
+    const requestId = ++playRequestIdRef.current;
 
     // Stop speech recognition so we don't pick up our own audio output
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -365,15 +374,69 @@ export default function SessionPage() {
       try { recognitionRef.current.abort(); } catch {}
     }
     setIsRecording(false);
+    setAdvisorStatus("speaking");
+    setIsSpeaking(true);
+
+    if (ttsAbortRef.current) {
+      try { ttsAbortRef.current.abort(); } catch {}
+    }
+    const controller = new AbortController();
+    ttsAbortRef.current = controller;
+
+    const speakWithBrowserFallback = () => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+        isPlayingRef.current = false;
+        setIsSpeaking(false);
+        setAdvisorStatus("idle");
+        if (onEnded) onEnded();
+        return;
+      }
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      synthUtteranceRef.current = utterance;
+      utterance.rate = 1;
+      utterance.pitch = 1;
+
+      utterance.onend = () => {
+        if (requestId !== playRequestIdRef.current) return;
+        synthUtteranceRef.current = null;
+        isPlayingRef.current = false;
+        setIsSpeaking(false);
+        setAdvisorStatus("idle");
+        if (onEnded) onEnded();
+      };
+
+      utterance.onerror = () => {
+        if (requestId !== playRequestIdRef.current) return;
+        synthUtteranceRef.current = null;
+        isPlayingRef.current = false;
+        setIsSpeaking(false);
+        setAdvisorStatus("idle");
+        if (onEnded) onEnded();
+      };
+
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    };
 
     try {
       const res = await fetch("/api/speak", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({ text }),
       });
 
-      if (!res.ok) throw new Error("TTS failed");
+      if (!res.ok) {
+        console.warn("Primary TTS failed, using browser speech fallback");
+        speakWithBrowserFallback();
+        return;
+      }
+
+      if (requestId !== playRequestIdRef.current) {
+        isPlayingRef.current = false;
+        return;
+      }
 
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -387,32 +450,30 @@ export default function SessionPage() {
       const audio = new Audio(url);
       audioRef.current = audio;
 
-      // Set state AFTER audio is ready (playAudio owns state transitions)
-      setAdvisorStatus("speaking");
-      setIsSpeaking(true);
-
       audio.onended = () => {
+        if (requestId !== playRequestIdRef.current) return;
         URL.revokeObjectURL(url);
+        ttsAbortRef.current = null;
         isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("listening");
+        setAdvisorStatus("idle");
         if (onEnded) onEnded();
-        // Auto-start listening after advisor finishes speaking
-        setTimeout(() => startListening(), 300);
       };
 
       audio.onerror = () => {
+        if (requestId !== playRequestIdRef.current) return;
         URL.revokeObjectURL(url);
+        ttsAbortRef.current = null;
         isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("listening");
+        setAdvisorStatus("idle");
         if (onEnded) onEnded();
-        setTimeout(() => startListening(), 300);
       };
 
       await audio.play().catch(e => {
         console.warn("Autoplay was blocked by browser:", e);
         URL.revokeObjectURL(url);
+        ttsAbortRef.current = null;
         isPlayingRef.current = false;
         setIsSpeaking(false);
         setAdvisorStatus("idle");
@@ -420,16 +481,20 @@ export default function SessionPage() {
       });
 
     } catch (error) {
+      ttsAbortRef.current = null;
+      if ((error as Error)?.name === "AbortError") {
+        isPlayingRef.current = false;
+        setIsSpeaking(false);
+        setAdvisorStatus("idle");
+        return;
+      }
       console.error("Audio playback error:", error);
-      isPlayingRef.current = false;
-      setIsSpeaking(false);
-      setAdvisorStatus("idle");
-      if (onEnded) onEnded();
+      speakWithBrowserFallback();
     }
   };
 
   const startListening = () => {
-    if (recognitionRef.current && !isRecording) {
+    if (recognitionRef.current && !isRecording && !isSpeaking && !isLoading && !sessionEnded) {
       setIsRecording(true);
       setAdvisorStatus("listening");
       try {
@@ -475,10 +540,18 @@ export default function SessionPage() {
     }
   };
 
+  const normalizeCourseCode = (code: string) => {
+    const raw = String(code || "").trim().toUpperCase().replace(/[+-]/g, " ");
+    const compact = raw.match(/^([A-Z]{2,4})\s*(\d{4})$/);
+    if (compact) return `${compact[1]} ${compact[2]}`;
+    return raw.replace(/\s+/g, " ");
+  };
+
   // Fetch real course title + best professor from backend and update the card
   const fetchAndEnrichCourse = async (code: string) => {
     try {
-      const encoded = encodeURIComponent(code);
+      const normalizedCode = normalizeCourseCode(code);
+      const encoded = encodeURIComponent(normalizedCode);
       const [courseRes, profRes] = await Promise.allSettled([
         fetch(`${API_BASE}/api/courses/${encoded}`),
         fetch(`${API_BASE}/api/courses/${encoded}/professor`),
@@ -512,8 +585,8 @@ export default function SessionPage() {
           updated[key] = {
             ...prev[key],
             courses: prev[key].courses.map((c: any) =>
-              c.code === code
-                ? { ...c, ...(title && { title }), ...(professor && { professor }), ...(aRate !== undefined && { aRate }) }
+              normalizeCourseCode(c.code) === normalizedCode
+                ? { ...c, code: normalizedCode, ...(title && { title }), ...(professor && { professor }), ...(aRate !== undefined && { aRate }) }
                 : c
             ),
           };
@@ -526,21 +599,33 @@ export default function SessionPage() {
   // Bulk fetch professor data for multiple courses in a single request
   const fetchBulkProfessors = async (courseCodes: string[]) => {
     if (courseCodes.length === 0) return;
+    const normalizedCodes = Array.from(new Set(courseCodes.map(normalizeCourseCode).filter(Boolean)));
+    console.log(`[CometAdvisor] fetchBulkProfessors: requesting ${normalizedCodes.length} courses`, normalizedCodes);
 
     // Helper to update columns with results (or fallback to TBD)
     const updateColumnsWithResults = (results: Record<string, any>) => {
+      const resultCount = Object.keys(results).length;
+      const withProf = Object.values(results).filter((r: any) => r?.professor).length;
+      console.log(`[CometAdvisor] Bulk results: ${resultCount} courses, ${withProf} with professors`);
+
       setColumns(prev => {
         const updated: Record<string, any> = {};
+        let enriched = 0;
         for (const key of Object.keys(prev)) {
           updated[key] = {
             ...prev[key],
             courses: prev[key].courses.map((c: any) => {
-              const profData = results[c.code];
-              if (profData && profData.professor) {
+              const normalizedCode = normalizeCourseCode(c.code);
+              const profData = results[normalizedCode];
+              if (profData) {
+                enriched++;
                 return {
                   ...c,
-                  professor: profData.display || profData.professor,
-                  aRate: profData.a_rate,
+                  code: profData.code || normalizedCode,
+                  title: profData.name || c.title,
+                  credits: profData.credits || c.credits,
+                  professor: profData.display || profData.professor || "TBD",
+                  ...(profData.a_rate !== undefined && profData.a_rate !== null ? { aRate: profData.a_rate } : {}),
                 };
               } else if (c.professor === "Loading...") {
                 return { ...c, professor: "TBD" };
@@ -549,6 +634,7 @@ export default function SessionPage() {
             }),
           };
         }
+        console.log(`[CometAdvisor] Enriched ${enriched} course cards from bulk response`);
         return updated;
       });
     };
@@ -557,18 +643,18 @@ export default function SessionPage() {
       const res = await fetch(`${API_BASE}/api/courses/bulk-professors`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ course_codes: courseCodes }),
+        body: JSON.stringify({ course_codes: normalizedCodes }),
       });
       if (!res.ok) {
-        // On error, still update Loading... to TBD
+        console.warn(`[CometAdvisor] Bulk professors failed: HTTP ${res.status}`);
         updateColumnsWithResults({});
         return;
       }
       const data = await res.json();
       const results = data.results || {};
       updateColumnsWithResults(results);
-    } catch {
-      // On network error, update Loading... to TBD
+    } catch (err) {
+      console.warn("[CometAdvisor] Bulk professors network error:", err);
       updateColumnsWithResults({});
     }
   };
@@ -598,7 +684,7 @@ export default function SessionPage() {
           const alreadyThere = updated[semKey].courses.some((c: any) => c.code === act.course_code);
           if (!alreadyThere) {
             const newCourse: Course = {
-              id: `${act.course_code}-${Math.random().toString(36).substr(2, 9)}`,
+              id: `${act.course_code}-${Math.random().toString(36).substring(2, 11)}`,
               code: act.course_code,
               title: act.course_code, // will be enriched
               professor: "Loading...",
@@ -674,7 +760,7 @@ export default function SessionPage() {
       addedCodes = cappedCodes;
 
       const newCourses = cappedCodes.map(code => ({
-        id: code + "-" + Math.random().toString(36).substr(2, 9),
+        id: code + "-" + Math.random().toString(36).substring(2, 11),
         code: code,
         title: code, // placeholder until enriched
         professor: "Loading...",
@@ -747,6 +833,8 @@ export default function SessionPage() {
         transcriptCtx.current || "",
         `\nCURRENT BOARD STATE (these are the semester columns the student sees):\n${boardSummary}`,
         expectedGradDate ? `\nExpected Graduation: ${expectedGradDate}` : "",
+        `\nCurrent Major: ${displayMajor}`,
+        displayMinor ? `\nDeclared Minor: ${displayMinor}` : "",
       ].join("");
 
       const res = await fetch(`${API_BASE}/api/voice/chat`, {
@@ -778,10 +866,21 @@ export default function SessionPage() {
           setShowRegenConfirm(true);
         }
 
-        // Detect and persist minor from conversation
+        // Detect minor from conversation - show confirmation dialog instead of auto-setting
         const detectedMinor = extractMinorFromChat();
-        if (detectedMinor && detectedMinor !== displayMinor) {
-          setDisplayMinor(detectedMinor);
+        if (detectedMinor && detectedMinor !== displayMinor && detectedMinor !== pendingMinor) {
+          // Show confirmation dialog instead of auto-setting
+          setPendingMinor(detectedMinor);
+          setShowMinorConfirm(true);
+        }
+
+        // Detect and persist major changes from conversation
+        const detectedMajor = extractMajorFromChat();
+        if (detectedMajor && detectedMajor !== displayMajor) {
+          setDisplayMajor(detectedMajor);
+          transcriptMajor.current = detectedMajor;
+          setChangeNotification(`Major updated → ${detectedMajor}`);
+          setTimeout(() => setChangeNotification(null), 4000);
         }
 
         playAudio(data.reply);
@@ -821,6 +920,8 @@ export default function SessionPage() {
       transcriptCtx.current || "",
       `\nCURRENT BOARD STATE:\n${boardSummary}`,
       expectedGradDate ? `\nExpected Graduation: ${expectedGradDate}` : "",
+      `\nCurrent Major: ${displayMajor}`,
+      displayMinor ? `\nDeclared Minor: ${displayMinor}` : "",
     ].join("");
 
     try {
@@ -841,10 +942,33 @@ export default function SessionPage() {
         playAudio(data.reply);
       }
     } catch {}
-  }, [columns, expectedGradDate]);
+  }, [columns, expectedGradDate, displayMajor, displayMinor]);
+
+  const stopSpeaking = useCallback(() => {
+    if (ttsAbortRef.current) {
+      try { ttsAbortRef.current.abort(); } catch {}
+      ttsAbortRef.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      synthUtteranceRef.current = null;
+    }
+    if (audioRef.current) {
+      // Remove handlers first so pause/src="" don't trigger onerror/onended
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+    isPlayingRef.current = false;
+    playRequestIdRef.current += 1;
+    setIsSpeaking(false);
+    setAdvisorStatus("idle");
+  }, []);
 
   const handleMicToggle = useCallback(() => {
-    if (isSpeaking) return; // Don't allow recording while AI is speaking
+    if (isSpeaking || isLoading || sessionEnded) return;
     if (isRecording && recognitionRef.current) {
       // Stop recording
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -854,7 +978,37 @@ export default function SessionPage() {
     } else {
       startListening();
     }
-  }, [isRecording, isSpeaking]);
+  }, [isRecording, isSpeaking, isLoading, sessionEnded]);
+
+  const handleEndSession = useCallback(() => {
+    if (ttsAbortRef.current) {
+      try { ttsAbortRef.current.abort(); } catch {}
+      ttsAbortRef.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      synthUtteranceRef.current = null;
+    }
+    // Stop any audio
+    if (audioRef.current) {
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+    isPlayingRef.current = false;
+    playRequestIdRef.current += 1;
+    // Stop recording
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch {}
+    }
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    setIsRecording(false);
+    setIsSpeaking(false);
+    setSessionEnded(true);
+    setAdvisorStatus("idle");
+  }, []);
 
   const handleExportPlan = useCallback(() => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(columns, null, 2));
@@ -891,23 +1045,55 @@ export default function SessionPage() {
     return null;
   }, []);
 
+  // Extract major changes from chat history (detect "switching to X", "changing major to X", etc.)
+  const extractMajorFromChat = useCallback(() => {
+    const history = chatHistory.current;
+    if (!history || history.length === 0) return null;
+    // Only look at recent messages (last 10) to get the LATEST major, not old mentions
+    const recentHistory = history.slice(-10);
+    const combinedText = recentHistory.map((m: any) => m.content || "").join(" ");
+    const majorPatterns = [
+      /(?:switch(?:ing)?|chang(?:e|ing)|moved?)\s+(?:my\s+)?major\s+to\s+(\w[\w\s]*?)(?:\.|,|!|\?|$)/i,
+      /(?:new|current|actual)\s+major\s+(?:is|will be)\s+(\w[\w\s]*?)(?:\.|,|!|\?|$)/i,
+      /major(?:ing)?\s+in\s+(\w[\w\s]*?)(?:\.|,|!|\?|$)/i,
+      /(?:i(?:'?m| am)\s+(?:now\s+)?(?:a|an)?\s*(\w[\w\s]*?)\s+major)/i,
+      /(?:declared?|pursuing)\s+(?:a\s+)?(\w[\w\s]*?)\s+(?:major|degree)/i,
+    ];
+    const ignoreWords = ["a", "the", "my", "your", "this", "that", "an", "cs", "computer"];
+    for (const pattern of majorPatterns) {
+      const match = combinedText.match(pattern);
+      if (match) {
+        const raw = match[1].trim().replace(/\s+/g, " ");
+        // Skip very short or common words
+        if (raw.length < 3 || ignoreWords.includes(raw.toLowerCase())) continue;
+        // Capitalize each word
+        return raw.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+      }
+    }
+    return null;
+  }, []);
+
   // Get comprehensive feedback on the current board state
   const handleGetFeedback = useCallback(async () => {
     if (!transcriptCtx.current || isGettingFeedback || isLoading) return;
     setIsGettingFeedback(true);
 
-    // Build detailed board state
-    const boardSummary = Object.entries(columns)
-      .filter(([key]) => key !== "graduation")
+    // Build feedback from future planned semesters only.
+    const futurePlanSummary = Object.entries(columns)
+      .filter(([key, col]) => key !== "graduation" && !col.isHistorical && !col.isInProgress)
       .map(([, col]) => {
         const courseCodes = (col.courses || []).map((c: any) => c.code).join(", ");
         return `${col.title}: ${courseCodes || "(empty)"} [${col.credits || 0} credits]`;
       }).join("\n");
 
-    const feedbackRequest = `Please review my ENTIRE current degree plan and give me comprehensive feedback.
+    const feedbackRequest = `Please review only my FUTURE planned semesters and give me comprehensive feedback.
 
-CURRENT BOARD STATE:
-${boardSummary}
+Do NOT mention completed semesters.
+Do NOT mention my in-progress/current semester.
+Focus only on future planned semesters.
+
+FUTURE PLAN STATE:
+${futurePlanSummary}
 
 Please evaluate:
 1. Are there any prerequisite violations? (courses placed before their prereqs)
@@ -921,7 +1107,7 @@ Be concise but thorough. Point out specific issues if any.`;
 
     const fullContext = [
       transcriptCtx.current || "",
-      `\nCURRENT BOARD STATE:\n${boardSummary}`,
+      `\nFUTURE PLAN STATE:\n${futurePlanSummary}`,
       expectedGradDate ? `\nTarget Graduation: ${expectedGradDate}` : "",
     ].join("");
 
@@ -951,7 +1137,50 @@ Be concise but thorough. Point out specific issues if any.`;
     setIsGettingFeedback(false);
   }, [columns, expectedGradDate, displayMajor, isGettingFeedback, isLoading, extractMinorFromChat]);
 
-  const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string, note?: string, prerequisite_chains?: Record<string, string[]>}) => {
+  // Pre-fetch bulk course/professor data, then build columns with enriched data
+  const buildColumnsFromPlan = async (plan: {semesters: any[], graduation_semester: string, note?: string, prerequisite_chains?: Record<string, string[]>}) => {
+    const seenCodes = new Set<string>(
+      [
+        ...transcriptCompletedCodes.current,
+        ...(columns.inProgress?.courses || []).map((c: any) => c.code),
+      ].map((code: string) => normalizeCourseCode(code))
+    );
+
+    // First pass: collect all course codes we need to enrich
+    const allCourseCodes: string[] = [];
+    const tempSeenCodes = new Set(seenCodes);
+
+    plan.semesters.forEach((sem: any) => {
+      (sem.courses || []).forEach((c: any) => {
+        const code = normalizeCourseCode(String(c.code || ""));
+        if (code && !tempSeenCodes.has(code)) {
+          tempSeenCodes.add(code);
+          allCourseCodes.push(code);
+        }
+      });
+    });
+
+    // Pre-fetch ALL enrichment data BEFORE building columns
+    let enrichmentData: Record<string, any> = {};
+    if (allCourseCodes.length > 0) {
+      console.log(`[CometAdvisor] Pre-fetching enrichment for ${allCourseCodes.length} courses`);
+      try {
+        const res = await fetch(`${API_BASE}/api/courses/bulk-professors`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ course_codes: allCourseCodes }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          enrichmentData = data.results || {};
+          console.log(`[CometAdvisor] Pre-fetch complete: ${Object.keys(enrichmentData).length} courses enriched`);
+        }
+      } catch (err) {
+        console.warn("[CometAdvisor] Pre-fetch failed, using fallback:", err);
+      }
+    }
+
+    // Now build columns with enriched data
     const newColumns: Record<string, any> = {};
 
     // Preserve all historical (past) semester columns
@@ -966,15 +1195,32 @@ Be concise but thorough. Point out specific issues if any.`;
 
     plan.semesters.forEach((sem: any) => {
       const key = sem.semester.replace(/\s+/g, "_");
-      const courses = (sem.courses || []).map((c: any) => ({
-        id: `${c.code}-${Math.random().toString(36).substr(2, 9)}`,
-        code: c.code,
-        title: c.title || c.code,
-        professor: "Loading...",
-        badge: "Degree Plan" as const,
-        whyText: c.reason || "Part of your degree plan.",
-        credits: c.credits || 3,
-      }));
+      const courses = (sem.courses || [])
+        .filter((c: any) => {
+          const code = normalizeCourseCode(String(c.code || ""));
+          if (!code || seenCodes.has(code)) return false;
+          seenCodes.add(code);
+          return true;
+        })
+        .map((c: any) => {
+          const code = normalizeCourseCode(c.code);
+          const enriched = enrichmentData[code];
+
+          // Use enriched data if available, otherwise use plan data with fallbacks
+          return {
+            id: `${code}-${Math.random().toString(36).substring(2, 11)}`,
+            code: enriched?.code || code,
+            title: enriched?.name || c.title || code,
+            professor: enriched?.display || enriched?.professor || "TBD",
+            badge: "Degree Plan" as const,
+            whyText: c.reason || "Part of your degree plan.",
+            credits: enriched?.credits || c.credits || 3,
+            ...(enriched?.a_rate !== undefined && enriched?.a_rate !== null ? { aRate: enriched.a_rate } : {}),
+          };
+        });
+
+      if (courses.length === 0) return;
+
       const totalCredits = courses.reduce((sum: number, c: any) => sum + (c.credits || 3), 0);
 
       newColumns[key] = {
@@ -986,14 +1232,14 @@ Be concise but thorough. Point out specific issues if any.`;
 
     // Add graduation marker column
     if (plan.graduation_semester) {
-      const gradKey = "graduation";
-      newColumns[gradKey] = {
+      newColumns["graduation"] = {
         title: `🎓 ${plan.graduation_semester}`,
         credits: 0,
         courses: [],
       };
     }
 
+    // Single setColumns call with all enriched data
     setColumns(newColumns);
     setPlanGenerated(true);
 
@@ -1006,11 +1252,6 @@ Be concise but thorough. Point out specific issues if any.`;
     if (plan.graduation_semester && plan.graduation_semester !== "Unknown") {
       setExpectedGradDate(plan.graduation_semester);
     }
-
-    // Fetch professor data for every planned course using bulk endpoint (single request)
-    const allCourseCodes = plan.semesters.flatMap((s: any) => (s.courses || []).map((c: any) => c.code));
-    // Single bulk request is much faster than individual parallel calls
-    fetchBulkProfessors(allCourseCodes);
   };
 
   const handleGeneratePlan = async () => {
@@ -1048,7 +1289,7 @@ Be concise but thorough. Point out specific issues if any.`;
       if (res.ok) {
         const plan = await res.json();
         if (plan.semesters && plan.semesters.length > 0) {
-          buildColumnsFromPlan(plan);
+          await buildColumnsFromPlan(plan);
           const noteText = plan.note ? ` ${plan.note}` : "";
           const accelMsg = earlyGradMode && plan.acceleration_possible === false
             ? " Early graduation isn't feasible with your remaining requirements."
@@ -1105,6 +1346,57 @@ Be concise but thorough. Point out specific issues if any.`;
         </div>
       )}
 
+      {/* Minor Confirmation Modal */}
+      {showMinorConfirm && pendingMinor && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="bg-[#1a1a3a] border border-teal-500/30 rounded-2xl p-6 max-w-md mx-4 shadow-[0_0_40px_rgba(20,184,166,0.2)] animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-2xl">📖</span>
+              <h3 className="text-lg font-semibold text-foreground" style={{ fontFamily: "'Figtree', sans-serif" }}>
+                Add {pendingMinor} Minor?
+              </h3>
+            </div>
+            <p className="text-muted-foreground text-sm mb-4">
+              Do you want to add a <span className="text-teal-400 font-medium">{pendingMinor}</span> minor to your degree plan?
+              This will be included when you generate your full plan.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setDisplayMinor(pendingMinor);
+                  setShowMinorConfirm(false);
+                  setPendingMinor(null);
+                  setChangeNotification(`Minor added → ${pendingMinor}`);
+                  setTimeout(() => setChangeNotification(null), 4000);
+                }}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-semibold text-sm transition-all"
+              >
+                Yes, Add Minor
+              </button>
+              <button
+                onClick={() => {
+                  setShowMinorConfirm(false);
+                  setPendingMinor(null);
+                }}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-white/10 text-muted-foreground hover:bg-white/5 font-semibold text-sm transition-all"
+              >
+                No Thanks
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Major/Minor Change Notification */}
+      {changeNotification && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-4 duration-300">
+          <div className="px-5 py-2.5 rounded-full bg-violet-600/90 border border-violet-400/40 text-white text-sm font-medium shadow-[0_0_20px_rgba(139,92,246,0.4)] backdrop-blur-sm flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+            {changeNotification}
+          </div>
+        </div>
+      )}
+
       <div className="max-w-7xl mx-auto w-full flex flex-col items-center">
 
         {/* Top Center: Voice Avatar */}
@@ -1116,6 +1408,17 @@ Be concise but thorough. Point out specific issues if any.`;
                <Loader2 className="w-4 h-4 animate-spin" />
                <span className="text-sm">Thinking...</span>
              </div>
+           )}
+
+           {/* Stop Speaking — shown whenever audio is playing OR TTS is loading */}
+           {(isSpeaking || (isLoading && isPlayingRef.current)) && (
+             <button
+               onClick={stopSpeaking}
+               className="mt-6 px-5 py-2.5 rounded-full border border-orange-400/40 bg-orange-400/10 text-orange-400 hover:bg-orange-400/20 flex items-center gap-2.5 transition-all shadow-sm"
+             >
+               <Square className="w-3.5 h-3.5 fill-current" />
+               Stop Speaking
+             </button>
            )}
 
            {/* Manual Mic Start/Stop Button */}
@@ -1150,23 +1453,34 @@ Be concise but thorough. Point out specific issues if any.`;
                 </div>
                 <div className="flex items-center gap-5 text-sm text-muted-foreground">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-base">📚</span>
+                    <span className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground/70">Credit Hours:</span>
                     <span>{displayCredits}<span className="text-muted-foreground/50">/{displayTotalRequired}</span></span>
                   </div>
                   {displayGpa !== null && (
                     <div className="flex items-center gap-1.5">
-                      <span className="text-base">📊</span>
+                      <span className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground/70">GPA:</span>
                       <span>{displayGpa.toFixed(2)}</span>
                     </div>
                   )}
                   <div className="flex items-center gap-1.5">
-                    <span className="text-base">💻</span>
+                    <span className="text-[11px] uppercase tracking-wider font-medium text-muted-foreground/70">Major:</span>
                     <span>{displayMajor}</span>
                   </div>
                   {displayMinor && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-base">📖</span>
-                      <span className="text-violet-400">{displayMinor} Minor</span>
+                    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-teal-500/10 border border-teal-500/20">
+                      <span className="text-[11px] uppercase tracking-wider font-medium text-teal-400/70">Minor:</span>
+                      <span className="text-teal-400 font-medium">{displayMinor}</span>
+                      <button
+                        onClick={() => {
+                          setDisplayMinor(null);
+                          setChangeNotification("Minor removed");
+                          setTimeout(() => setChangeNotification(null), 3000);
+                        }}
+                        className="ml-1 text-teal-400/50 hover:text-teal-300 text-xs"
+                        title="Remove minor"
+                      >
+                        ✕
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1219,12 +1533,18 @@ Be concise but thorough. Point out specific issues if any.`;
 
       </div>
 
-      {/* Floating Export Button */}
-      <div className="fixed bottom-12 right-12 transition-all duration-500 z-50">
+      {/* Floating Buttons */}
+      <div className="fixed bottom-12 right-12 flex flex-col gap-3 items-end transition-all duration-500 z-50">
          <button onClick={handleExportPlan} className="px-6 py-4 rounded-xl bg-orange text-foreground font-[var(--font-heading)] font-semibold text-lg flex items-center gap-3 shadow-[0_0_30px_rgba(232,119,34,0.3)] hover:scale-105 transition-all">
            <Download className="w-5 h-5" />
            Export Final Plan
          </button>
+         {!sessionEnded && (
+           <button onClick={handleEndSession} className="px-5 py-3 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/15 hover:border-red-500/40 font-semibold text-sm flex items-center gap-2.5 transition-all">
+             <LogOut className="w-4 h-4" />
+             End Session
+           </button>
+         )}
       </div>
 
     </div>

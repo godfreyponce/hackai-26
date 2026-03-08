@@ -15,6 +15,9 @@ export function ChatMessage({ content, isAdvisor }: ChatMessageProps) {
             : "bg-[#141428]/60 border-r-2 border-teal text-foreground"
         }`}
       >
+        {isAdvisor && (
+          <p className="text-[10px] uppercase tracking-wider font-semibold text-violet-400 mb-1">Pam</p>
+        )}
         <p className="text-sm font-sans leading-relaxed">{content}</p>
       </div>
     </div>

@@ -141,25 +141,31 @@ RULES for actions:
 - If a prereq hasn't been met, WARN the student but still include the action if they insist
 - You can include multiple action tags in one response (e.g. for swaps)
 
-PLAN REGENERATION (CRITICAL — use when student's goals change significantly):
-When the student declares a MINOR, changes their graduation goal significantly, or asks to redesign their plan, use:
+PLAN REGENERATION (use ONLY for graduation timeline changes):
+When the student requests a MAJOR graduation timeline change (graduate early, different graduation year), use:
   [ACTION:SUGGEST_REGENERATE|reason]
 
-Examples:
-  Student: "I want to add a Finance minor"
-  You: "A Finance minor is a great complement to CS! It adds about 18 credit hours including courses like FIN 3320 and ACCT 2301. I'll keep track of this going forward.
-  [ACTION:SUGGEST_REGENERATE|You declared a Finance minor]"
-
-  Student: "Actually I want to switch my minor from Finance to Psychology"
-  You: "No problem! Switching to a Psychology minor. This includes courses like PSY 2301 and PSY 3380.
-  [ACTION:SUGGEST_REGENERATE|You changed your minor to Psychology]"
-
+Example:
   Student: "I need to graduate a year earlier"
   You: "That's ambitious! Let me recalculate your timeline.
   [ACTION:SUGGEST_REGENERATE|You requested early graduation]"
 
-ONLY use SUGGEST_REGENERATE for major goal changes (new minor, changed minor, major graduation timeline change).
-Do NOT use it for small questions, single course changes, or general advice."""
+IMPORTANT — DO NOT use SUGGEST_REGENERATE for minors!
+When a student mentions a minor, just provide helpful guidance about the courses involved.
+The frontend will automatically prompt the user to confirm adding the minor to their plan.
+
+Example of correct minor handling (NO SUGGEST_REGENERATE):
+  Student: "I want to add a Finance minor"
+  You: "A Finance minor is a great complement to CS! It typically requires around 18 credit hours including courses like FIN 3320, ACCT 2301, and ACCT 2302. The prerequisites are manageable alongside your CS courses."
+
+  Student: "What would a Psychology minor look like?"
+  You: "A Psychology minor requires about 18 hours. You'd start with PSY 2301 Introduction to Psychology, then move into courses like PSY 3331 Abnormal Psychology and PSY 3380 Cognitive Psychology."
+
+For minor discussions:
+- Give specific course recommendations from your knowledge and the UTD catalog data
+- Mention credit hour requirements and typical course sequences
+- Explain how minor courses fit with the student's major
+- DO NOT emit any action tags — let the user decide if they want to pursue it"""
 
 
 async def generate_advisor_message(
@@ -390,6 +396,70 @@ Required courses: {', '.join(required)}
 Prerequisites: {', '.join(f'{c} requires {", ".join(ps)}' for c, ps in prereqs.items()) if prereqs else 'None'}
 Use this when advising about the {detected_minor} minor."""
 
+    # Also detect minor mentions in the current user message and inject data
+    import re as _re2
+    minor_in_msg = _re2.search(
+        r"(?:want|pursuing|doing|interested in|add|adding)\s+(?:a\s+)?(\w+)\s+minor|(\w+)\s+minor",
+        user_message,
+        _re2.IGNORECASE
+    )
+    if minor_in_msg:
+        mentioned_minor = (minor_in_msg.group(1) or minor_in_msg.group(2)).strip()
+        minor_plan = get_minor_plan(mentioned_minor)
+        if minor_plan:
+            # Inject formal minor plan data
+            required = minor_plan.get("required_courses", [])
+            prereqs = minor_plan.get("prerequisite_chains", {})
+            total_hours = minor_plan.get("total_hours", 18)
+            notes = minor_plan.get("notes", "")
+
+            # Enrich with Nebula catalog data for course titles
+            from services.data_loader import get_course_store
+            store = get_course_store()
+            course_details = []
+            for code in required:
+                info = store.get_course(code) if store else None
+                if info:
+                    course_details.append(f"  - {code}: {info.title} ({info.credits} credits)")
+                else:
+                    course_details.append(f"  - {code}")
+
+            system_prompt += f"""
+
+{mentioned_minor.upper()} MINOR (user is asking about this):
+Total credit hours: {total_hours}
+Required courses:
+{chr(10).join(course_details)}
+Prerequisites: {', '.join(f'{c} requires {", ".join(ps)}' for c, ps in prereqs.items()) if prereqs else 'None'}
+{f'Note: {notes}' if notes else ''}
+
+Provide helpful, specific guidance about this minor. Mention course codes and titles.
+Do NOT emit any [ACTION:...] tags. Let the user decide if they want to pursue it."""
+        else:
+            # No formal plan - use Nebula lookup + LLM knowledge
+            prefixes = get_minor_subject_prefixes(mentioned_minor)
+            from services.data_loader import get_course_store
+            store = get_course_store()
+
+            # Get sample courses from Nebula for this subject
+            sample_courses = []
+            if store and prefixes:
+                for code, info in store.courses.items():
+                    for prefix in prefixes:
+                        if code.startswith(prefix + " ") and len(sample_courses) < 10:
+                            sample_courses.append(f"  - {code}: {info.title} ({info.credits} credits)")
+
+            system_prompt += f"""
+
+{mentioned_minor.upper()} MINOR (user is asking about this):
+We don't have a formal course plan for this minor, but here are available courses in related subjects ({', '.join(prefixes) if prefixes else 'various'}):
+{chr(10).join(sample_courses[:8]) if sample_courses else '  (No courses found in catalog - use your knowledge of UTD programs)'}
+
+A typical UTD minor requires 18 credit hours (6 courses).
+Use your knowledge of {mentioned_minor} programs to provide guidance on typical course sequences.
+If you're not certain about exact requirements, recommend the student verify with the academic advisor.
+Do NOT emit any [ACTION:...] tags. Let the user decide if they want to pursue it."""
+
     # Convert history to Gemini Content format
     gemini_history = []
     for msg in conversation_history:
@@ -497,14 +567,86 @@ class _SemesterPlan:
         self.total_credits = total_credits
 
 
-def _validate_semester_credits(semester_name: str, courses: list, total_credits: int) -> tuple[list, int]:
-    """Enforce credit hour limits: summer max 9, fall/spring max 18."""
+def _validate_semester_credits(semester_name: str, courses: list, total_credits: int) -> tuple[list, int, list]:
+    """
+    Enforce credit hour limits: summer max 9, fall/spring max 18.
+    Returns (kept_courses, kept_credits, overflow_courses) so overflow can be redistributed.
+    """
     is_summer = "Summer" in semester_name
     max_hours = 9 if is_summer else 18
+    overflow = []
     while total_credits > max_hours and courses:
         removed = courses.pop()
+        overflow.append(removed)
         total_credits -= removed.get("credits", 3)
-    return courses, total_credits
+    return courses, total_credits, overflow
+
+def _normalize_plan_courses(semesters: list[dict]) -> list[dict]:
+    """Replace LLM-provided titles with real catalog titles when available."""
+    from services.data_loader import get_course_store
+
+    store = get_course_store()
+    normalized: list[dict] = []
+
+    for sem in semesters:
+        courses = []
+        for course in sem.get("courses", []):
+            code = str(course.get("code", "")).strip().upper()
+            if not code:
+                continue
+
+            info = store.get_course(code)
+            if info:
+                courses.append({
+                    **course,
+                    "code": info.code,
+                    "title": info.title or course.get("title") or info.code,
+                    "credits": course.get("credits") or info.credits or 3,
+                })
+            else:
+                courses.append({
+                    **course,
+                    "code": code,
+                    "title": course.get("title") or code,
+                    "credits": course.get("credits", 3),
+                })
+
+        sem["courses"] = courses
+        sem["total_credits"] = sum(c.get("credits", 3) for c in courses)
+        normalized.append(sem)
+
+    return normalized
+
+
+def _dedupe_plan_semesters(semesters: list[dict], completed_codes: Optional[list[str]] = None) -> list[dict]:
+    """Remove duplicate or already-completed courses from the generated plan."""
+    import re as _re
+    def _norm(code: str) -> str:
+        code = code.strip().upper()
+        m = _re.match(r'^([A-Z]{2,4})[\s\-]*?(\d{4})$', code)
+        return f"{m.group(1)} {m.group(2)}" if m else code
+
+    seen_codes = {_norm(code) for code in (completed_codes or []) if code}
+    cleaned_semesters: list[dict] = []
+
+    for sem in semesters:
+        unique_courses = []
+        local_seen: set[str] = set()
+
+        for course in sem.get("courses", []):
+            code = _norm(str(course.get("code", "")))
+            if not code or code in seen_codes or code in local_seen:
+                continue
+            unique_courses.append(course)
+            local_seen.add(code)
+            seen_codes.add(code)
+
+        if unique_courses:
+            sem["courses"] = unique_courses
+            sem["total_credits"] = sum(c.get("credits", 3) for c in unique_courses)
+            cleaned_semesters.append(sem)
+
+    return cleaned_semesters
 
 
 def _count_semesters_between(start: str, end: str) -> int:
@@ -680,6 +822,130 @@ def _redistribute_semesters(
     return new_semesters if new_semesters else semesters
 
 
+def _rebalance_semesters(
+    semesters: list[dict],
+    prereq_chains: dict[str, list[str]],
+    completed_set: set[str],
+) -> list[dict]:
+    """
+    Rebalance courses across semesters to ensure even distribution.
+
+    Rules:
+    - Fall/Spring should target 15 credits (5 courses), min 12, max 18
+    - Summer should be max 9 credits (3 courses)
+    - Courses can only be moved LATER (never earlier, to respect prereqs)
+    - Underfilled early semesters get filled from overfilled later semesters
+    """
+    import re as _re
+
+    def _norm(code: str) -> str:
+        code = str(code or "").strip().upper()
+        m = _re.match(r'^([A-Z]{2,4})[\s\-]*?(\d{4})$', code)
+        return f"{m.group(1)} {m.group(2)}" if m else code
+
+    if not semesters or len(semesters) < 2:
+        return semesters
+
+    # Calculate target credits per semester
+    def get_targets(sem_name: str) -> tuple[int, int, int]:
+        """Returns (min, target, max) credits for a semester."""
+        is_summer = "Summer" in sem_name
+        if is_summer:
+            return (6, 9, 9)  # Summer: min 6, target 9, max 9
+        return (12, 15, 18)  # Fall/Spring: min 12, target 15, max 18
+
+    # Build a map of which semester each course is in (for prereq checking)
+    def build_course_semester_map() -> dict[str, int]:
+        """Returns {normalized_code: semester_index}"""
+        result = {}
+        for idx, sem in enumerate(semesters):
+            for course in sem.get("courses", []):
+                code = _norm(course.get("code", ""))
+                if code:
+                    result[code] = idx
+        return result
+
+    # Check if a course can be moved to an earlier semester (prereqs must be satisfied)
+    def can_move_earlier(course_code: str, target_idx: int, course_map: dict) -> bool:
+        """Returns True if course can be placed in target_idx semester."""
+        code = _norm(course_code)
+        prereqs = prereq_chains.get(code, [])
+        for prereq in prereqs:
+            prereq_norm = _norm(prereq)
+            if prereq_norm in completed_set:
+                continue  # Already completed
+            prereq_sem_idx = course_map.get(prereq_norm)
+            if prereq_sem_idx is None or prereq_sem_idx >= target_idx:
+                return False  # Prereq not found or in same/later semester
+        return True
+
+    # First pass: identify underfilled and overfilled semesters
+    max_iterations = 10  # Prevent infinite loops
+    iteration = 0
+
+    while iteration < max_iterations:
+        iteration += 1
+        made_change = False
+        course_map = build_course_semester_map()
+
+        # Find underfilled semesters (starting from earliest)
+        for underfilled_idx, sem in enumerate(semesters):
+            sem_name = sem.get("semester", "")
+            min_credits, target_credits, _ = get_targets(sem_name)
+            current_credits = sem.get("total_credits", 0)
+
+            if current_credits >= min_credits:
+                continue  # This semester is fine
+
+            # This semester is underfilled, look for courses to pull from LATER semesters
+            credits_needed = target_credits - current_credits
+
+            for overfilled_idx in range(len(semesters) - 1, underfilled_idx, -1):
+                if credits_needed <= 0:
+                    break
+
+                donor_sem = semesters[overfilled_idx]
+                donor_name = donor_sem.get("semester", "")
+                donor_min, _, _ = get_targets(donor_name)
+                donor_credits = donor_sem.get("total_credits", 0)
+                donor_courses = donor_sem.get("courses", [])
+
+                # Only take from semesters that have excess courses
+                if donor_credits <= donor_min or len(donor_courses) <= 3:
+                    continue
+
+                # Try to move courses from donor to underfilled
+                courses_to_move = []
+                for course in list(donor_courses):
+                    if credits_needed <= 0:
+                        break
+                    course_code = course.get("code", "")
+                    course_credits = course.get("credits", 3)
+
+                    # Check if we can move this course earlier
+                    if can_move_earlier(course_code, underfilled_idx, course_map):
+                        courses_to_move.append(course)
+                        credits_needed -= course_credits
+
+                # Execute the moves
+                for course in courses_to_move:
+                    donor_courses.remove(course)
+                    sem.setdefault("courses", []).append(course)
+                    made_change = True
+
+                # Recalculate credits
+                sem["total_credits"] = sum(c.get("credits", 3) for c in sem.get("courses", []))
+                donor_sem["total_credits"] = sum(c.get("credits", 3) for c in donor_courses)
+
+        if not made_change:
+            break  # No more changes possible
+
+    # Remove any semesters that became empty after rebalancing
+    semesters = [s for s in semesters if s.get("courses")]
+
+    return semesters
+
+
 def _extract_minor_from_conversation(history: list[dict]) -> Optional[str]:
     """Extract minor declaration from conversation history."""
     if not history:
@@ -784,10 +1050,16 @@ async def generate_full_plan(
     remaining_hours = max(0, TOTAL_DEGREE_HOURS - total_credit_hours)
     semesters_remaining = math.ceil(remaining_hours / AVG_HOURS_PER_SEMESTER)
 
-    # Build remaining courses from degree plan
-    completed_set = set(completed_courses or [])
+    # Normalize completed course codes before any comparison
+    from services.degree_plans import _normalize_code
+    normalized_completed = [_normalize_code(c) for c in (completed_courses or []) if c]
+    completed_set = set(normalized_completed)
     remaining_by_cat = get_remaining_courses(plan, list(completed_set))
     prereq_chains = plan.get("prerequisite_chains", {})
+
+    # Enrich remaining courses with Nebula catalog data (real titles + descriptions)
+    from services.data_loader import get_course_store
+    store = get_course_store()
 
     remaining_courses_text = ""
     for cat_key, courses in remaining_by_cat.items():
@@ -796,7 +1068,12 @@ async def generate_full_plan(
         for code in courses:
             prereqs = prereq_chains.get(code, [])
             prereq_str = f" (prereqs: {', '.join(prereqs)})" if prereqs else ""
-            remaining_courses_text += f"  - {code}{prereq_str}\n"
+            # Look up real title from Nebula catalog
+            info = store.get_course(code) if store else None
+            if info and info.title:
+                remaining_courses_text += f"  - {code}: {info.title} ({info.credits} cr){prereq_str}\n"
+            else:
+                remaining_courses_text += f"  - {code}{prereq_str}\n"
 
     all_prereqs_text = ""
     for course, prereqs in prereq_chains.items():
@@ -935,6 +1212,9 @@ SEMESTERS TO PLAN (you MUST generate EXACTLY these semesters — one JSON object
 REMAINING REQUIRED COURSES (from official degree plan — you MUST schedule ALL of these):
 {remaining_courses_text}
 
+ALREADY COMPLETED COURSES (DO NOT include ANY of these in the plan — the student has ALREADY taken them):
+{', '.join(sorted(completed_set)) if completed_set else 'None'}
+
 PREREQUISITE CHAINS (MUST ENFORCE — a course CANNOT appear before its prereqs):
 {all_prereqs_text}
 
@@ -1032,13 +1312,35 @@ REMINDER: You MUST output {semesters_remaining} semesters with courses spread ac
 
         plan = json.loads(raw)
 
-        # Validate and enforce credit limits per semester
+        plan["semesters"] = _dedupe_plan_semesters(
+            plan.get("semesters", []),
+            normalized_completed,  # Use normalized codes so dedup catches case/spacing variants
+        )
+
+        plan["semesters"] = _normalize_plan_courses(plan.get("semesters", []))
+
+        # Validate and enforce credit limits per semester, collecting overflow for redistribution
+        all_overflow: list[dict] = []
         for sem in plan.get("semesters", []):
-            sem["courses"], sem["total_credits"] = _validate_semester_credits(
+            sem["courses"], sem["total_credits"], overflow = _validate_semester_credits(
                 sem.get("semester", ""),
                 sem.get("courses", []),
                 sem.get("total_credits", 0),
             )
+            all_overflow.extend(overflow)
+
+        # Redistribute overflow courses to underfilled semesters
+        if all_overflow:
+            logger.info(f"Redistributing {len(all_overflow)} overflow courses")
+            for overflow_course in all_overflow:
+                # Find the first semester with room
+                for sem in plan.get("semesters", []):
+                    is_summer = "Summer" in sem.get("semester", "")
+                    max_credits = 9 if is_summer else 18
+                    if sem.get("total_credits", 0) + overflow_course.get("credits", 3) <= max_credits:
+                        sem["courses"].append(overflow_course)
+                        sem["total_credits"] = sum(c.get("credits", 3) for c in sem["courses"])
+                        break
 
         # Remove empty semesters (LLM sometimes generates trailing empty ones)
         plan["semesters"] = [s for s in plan.get("semesters", []) if s.get("courses")]
@@ -1046,6 +1348,11 @@ REMINDER: You MUST output {semesters_remaining} semesters with courses spread ac
         # ── Redistribute if LLM collapsed courses into too few semesters ──
         plan["semesters"] = _redistribute_semesters(
             plan["semesters"], semester_labels[:semesters_remaining + 1], accelerate
+        )
+
+        # ── Rebalance to fill underfilled semesters from overfilled ones ──
+        plan["semesters"] = _rebalance_semesters(
+            plan["semesters"], prereq_chains, completed_set
         )
 
         plan["total_semesters"] = len(plan.get("semesters", []))

@@ -8,6 +8,7 @@ import asyncio
 from fastapi import APIRouter, Query, HTTPException
 from typing import Optional
 from pydantic import BaseModel
+import re
 
 from services.data_loader import get_course_store
 from services import nebula
@@ -19,6 +20,61 @@ NEBULA_BASE = "https://api.utdnebula.com"
 NEBULA_HEADERS = {"x-api-key": os.getenv("NEBULA_API_KEY", "")}
 
 router = APIRouter()
+
+
+def _normalize_course_code(raw: str) -> str:
+    """Normalize course codes like CS3345, CS-3345, or CS+3345 -> CS 3345."""
+    value = (raw or "").strip().upper().replace("+", " ").replace("-", " ")
+    value = re.sub(r"\s+", " ", value)
+    compact = re.match(r"^([A-Z]{2,4})\s*(\d{4})$", value)
+    if compact:
+        return f"{compact.group(1)} {compact.group(2)}"
+    return value
+
+
+async def _get_course_payload(code: str) -> Optional[dict]:
+    """Return canonical course details from cache, falling back to Nebula when needed."""
+    normalized = _normalize_course_code(code)
+    store = get_course_store()
+    info = store.get_course(normalized)
+
+    if info:
+        return {
+            "code": info.code,
+            "name": info.title,
+            "credits": info.credits,
+            "description": info.description,
+            "school": info.school,
+            "enrollment_reqs": info.enrollment_reqs,
+            "prerequisites": store.get_prerequisites(info.code),
+        }
+
+    try:
+        parts = normalized.split()
+        if len(parts) >= 2:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    f"{NEBULA_BASE}/course",
+                    params={"subject_prefix": parts[0], "course_number": parts[1]},
+                    headers=NEBULA_HEADERS,
+                )
+                if resp.status_code == 200:
+                    courses = resp.json().get("data", [])
+                    if courses:
+                        c = courses[0]
+                        return {
+                            "code": normalized,
+                            "name": c.get("title", normalized),
+                            "credits": int(c.get("credit_hours", "3") or "3"),
+                            "description": c.get("description", ""),
+                            "school": c.get("school", ""),
+                            "enrollment_reqs": c.get("enrollment_reqs", ""),
+                            "prerequisites": [],
+                        }
+    except Exception:
+        pass
+
+    return None
 
 
 @router.get("/")
@@ -127,48 +183,11 @@ async def get_minor_details(minor_name: str):
 @router.get("/{course_code}")
 async def get_course(course_code: str):
     """Get details for a specific course (e.g., CS+1337)."""
-    # URL-encode spaces as + in the path
-    code = course_code.replace("+", " ").upper()
-    store = get_course_store()
-    info = store.get_course(code)
-
-    if not info:
-        # Fallback: try Nebula API directly
-        try:
-            parts = code.split()
-            if len(parts) >= 2:
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    resp = await client.get(
-                        f"{NEBULA_BASE}/course",
-                        params={"subject_prefix": parts[0], "course_number": parts[1]},
-                        headers=NEBULA_HEADERS,
-                    )
-                    if resp.status_code == 200:
-                        courses = resp.json().get("data", [])
-                        if courses:
-                            c = courses[0]
-                            return {
-                                "code": code,
-                                "name": c.get("title", code),
-                                "credits": int(c.get("credit_hours", "3") or "3"),
-                                "description": c.get("description", ""),
-                                "school": c.get("school", ""),
-                                "enrollment_reqs": c.get("enrollment_reqs", ""),
-                                "prerequisites": [],
-                            }
-        except Exception:
-            pass
+    code = _normalize_course_code(course_code)
+    payload = await _get_course_payload(code)
+    if not payload:
         return {"error": f"Course {code} not found"}
-
-    return {
-        "code": info.code,
-        "name": info.title,
-        "credits": info.credits,
-        "description": info.description,
-        "school": info.school,
-        "enrollment_reqs": info.enrollment_reqs,
-        "prerequisites": store.get_prerequisites(code),
-    }
+    return payload
 
 
 @router.get("/{course_code}/professor")
@@ -183,7 +202,7 @@ async def get_professor_for_course(course_code: str):
         {professor, a_rate, total_students, display} or {professor: None}
     """
     # Parse course code - handle various formats
-    code = course_code.replace("+", " ").replace("-", " ").strip()
+    code = _normalize_course_code(course_code)
     parts = code.split()
 
     if len(parts) < 2:
@@ -204,6 +223,7 @@ async def get_professor_for_course(course_code: str):
         "professor": result["name"],
         "a_rate": result["a_rate"],
         "total_students": result["total_students"],
+        "low_sample": result.get("low_sample", False),
         "display": f"{result['name']} ({result['a_rate']}% A-rate)",
     }
 
@@ -222,18 +242,35 @@ async def get_bulk_professors(request: BulkProfessorRequest):
         {results: {course_code: {professor, a_rate, total_students, display} | null}}
     """
     async def fetch_prof(code: str):
-        parts = code.replace("+", " ").replace("-", " ").strip().split()
+        normalized = _normalize_course_code(code)
+        parts = normalized.split()
+        course_payload = await _get_course_payload(normalized)
         if len(parts) < 2:
-            return code, None
+            return normalized, {
+                **(course_payload or {"code": normalized, "name": normalized, "credits": 3}),
+                "professor": None,
+                "a_rate": None,
+                "total_students": None,
+                "display": None,
+            }
+
         result = await nebula.get_best_professor(parts[0].upper(), parts[1])
+        payload = {
+            **(course_payload or {"code": normalized, "name": normalized, "credits": 3}),
+            "professor": None,
+            "a_rate": None,
+            "total_students": None,
+            "display": None,
+        }
         if result:
-            return code, {
+            payload.update({
                 "professor": result["name"],
                 "a_rate": result["a_rate"],
                 "total_students": result["total_students"],
+                "low_sample": result.get("low_sample", False),
                 "display": f"{result['name']} ({result['a_rate']}% A-rate)",
-            }
-        return code, None
+            })
+        return normalized, payload
 
     # Fetch all professors in parallel
     tasks = [fetch_prof(code) for code in request.course_codes]

@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+MAX_RELEVANT_COURSES = 8
+MAX_DESCRIPTION_CHARS = 120
+MAX_ENROLLMENT_REQ_CHARS = 100
+MAX_CONTEXT_CHARS = 8000
+MAX_COMPLETED_COURSES = 60
+
 
 class ChatMessage(BaseModel):
     role: Literal["user", "model"]
@@ -73,7 +79,7 @@ def _build_course_entry(code: str, store) -> str:
     
     if info.description:
         # Truncate long descriptions
-        desc = info.description[:200] + "..." if len(info.description) > 200 else info.description
+        desc = info.description[:MAX_DESCRIPTION_CHARS] + "..." if len(info.description) > MAX_DESCRIPTION_CHARS else info.description
         parts.append(f"  Description: {desc}")
     
     # Get prerequisites
@@ -81,7 +87,7 @@ def _build_course_entry(code: str, store) -> str:
     if prereqs:
         parts.append(f"  Prerequisites: {', '.join(prereqs)}")
     elif info.enrollment_reqs:
-        reqs = info.enrollment_reqs[:150] + "..." if len(info.enrollment_reqs) > 150 else info.enrollment_reqs
+        reqs = info.enrollment_reqs[:MAX_ENROLLMENT_REQ_CHARS] + "..." if len(info.enrollment_reqs) > MAX_ENROLLMENT_REQ_CHARS else info.enrollment_reqs
         parts.append(f"  Enrollment Requirements: {reqs}")
     else:
         parts.append(f"  Prerequisites: None")
@@ -95,22 +101,17 @@ def _extract_relevant_courses(message: str, history: list[ChatMessage]) -> str:
     if not store.courses:
         return ""
 
-    # Combine message + recent history for context
     full_text = message.lower()
-    for msg in history[-4:]:  # Last 4 messages
-        full_text += " " + msg.content.lower()
+    recent_text = " ".join(msg.content.lower() for msg in history[-2:])
 
-    found_codes = set()
+    explicit_codes: list[str] = []
+    topic_codes: list[str] = []
 
-    # 1. Look for explicit subject prefixes mentioned as standalone words
-    for prefix in SUBJECT_PREFIXES:
-        pattern = r'\b' + re.escape(prefix) + r'\b'
-        if re.search(pattern, message, re.IGNORECASE):
-            for code in store.courses:
-                if code.startswith(prefix + " "):
-                    found_codes.add(code)
+    def add_unique(target: list[str], code: str):
+        if code not in target and store.get_course(code):
+            target.append(code)
 
-    # 2. Look for topic keywords
+    # Look for topic keywords in current message first, then very recent context.
     topic_keywords = {
         "machine learning": ["CS 4375", "CS 4395", "CS 6375", "CS 6363"],
         "artificial intelligence": ["CS 4365", "CS 6364"],
@@ -133,24 +134,60 @@ def _extract_relevant_courses(message: str, history: list[ChatMessage]) -> str:
     }
 
     for keyword, codes in topic_keywords.items():
-        if keyword in full_text:
-            found_codes.update(codes)
+        if keyword in full_text or keyword in recent_text:
+            for code in codes:
+                add_unique(topic_codes, code)
 
-    # 3. Look for specific course code mentions (e.g., "CS 1337", "CGS 2301")
+    # Look for specific course code mentions (e.g., "CS 1337", "CGS 2301").
     code_pattern = re.compile(r'\b([A-Z]{2,4})\s*(\d{4})\b')
-    for match in code_pattern.finditer(message.upper()):
+    for match in code_pattern.finditer(f"{message} {recent_text}".upper()):
         code = f"{match.group(1)} {match.group(2)}"
-        if store.get_course(code):
-            found_codes.add(code)
+        add_unique(explicit_codes, code)
 
-    if not found_codes:
+    # Avoid dumping whole subject catalogs into prompt. Bare prefix mentions are too expensive.
+    # Keep only explicitly mentioned and topic-relevant courses.
+    ordered_codes: list[str] = []
+    for code in explicit_codes + topic_codes:
+        if code not in ordered_codes:
+            ordered_codes.append(code)
+
+    if not ordered_codes:
         return ""
 
-    # Sort and limit to 25 courses, build detailed entries
-    sorted_codes = sorted(found_codes)[:25]
-    entries = [_build_course_entry(code, store) for code in sorted_codes]
+    entries = [_build_course_entry(code, store) for code in ordered_codes[:MAX_RELEVANT_COURSES]]
 
     return "RELEVANT UTD COURSES FROM OFFICIAL CATALOG (this is authoritative data):\n\n" + "\n\n".join(entries)
+
+
+def _compact_context(full_context: str) -> str:
+    """Trim oversized context so Gemini sees only the most useful parts."""
+    if not full_context:
+        return full_context
+
+    lines = full_context.splitlines()
+    compacted: list[str] = []
+
+    for line in lines:
+        if line.startswith("Completed Courses:"):
+            course_blob = line.split(":", 1)[1].strip() if ":" in line else ""
+            courses = [c.strip() for c in course_blob.split(";") if c.strip()]
+            if len(courses) > MAX_COMPLETED_COURSES:
+                kept = courses[-MAX_COMPLETED_COURSES:]
+                compacted.append(
+                    f"Completed Courses ({len(kept)} most recent of {len(courses)}): " + "; ".join(kept)
+                )
+            else:
+                compacted.append(line)
+        else:
+            compacted.append(line)
+
+    compact = "\n".join(compacted).strip()
+    if len(compact) <= MAX_CONTEXT_CHARS:
+        return compact
+
+    head = int(MAX_CONTEXT_CHARS * 0.7)
+    tail = MAX_CONTEXT_CHARS - head - len("\n...[truncated for speed]...\n")
+    return compact[:head].rstrip() + "\n...[truncated for speed]...\n" + compact[-tail:].lstrip()
 
 
 @router.post("/start", response_model=ChatResponse)
@@ -178,6 +215,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
     full_context = request.transcript_context or ""
     if course_context:
         full_context += ("\n\n" if full_context else "") + course_context
+    full_context = _compact_context(full_context)
 
     try:
         advisor_reply = await llm.chat_with_advisor(

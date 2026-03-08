@@ -580,13 +580,26 @@ def get_all_required_courses(plan: dict) -> set[str]:
     return required
 
 
+def _normalize_code(code: str) -> str:
+    """Normalize a course code: uppercase, single space between prefix and number."""
+    import re
+    code = code.strip().upper()
+    # Handle codes like "GOVT2305", "GOVT  2305", "GOVT-2305"
+    m = re.match(r'^([A-Z]{2,4})[\s\-]*?(\d{4})$', code)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+    return code
+
+
 def get_remaining_courses(plan: dict, completed_codes: list[str]) -> dict[str, list[str]]:
     """
     Compute remaining required courses per category.
     Returns { category_key: [remaining_course_codes] }
     For elective categories with 'pick' count, only include enough to fill the requirement.
+    Normalizes course code comparison to handle case/spacing differences.
     """
-    completed_set = set(completed_codes)
+    # Normalize all completed codes for robust comparison
+    completed_set = {_normalize_code(c) for c in completed_codes if c}
     remaining = {}
 
     for cat_key, cat in plan["categories"].items():
@@ -597,12 +610,12 @@ def get_remaining_courses(plan: dict, completed_codes: list[str]) -> dict[str, l
         still_needed = []
         completed_in_cat = 0
         for course in req_courses:
-            if course in completed_set:
+            if _normalize_code(course) in completed_set:
                 completed_in_cat += 1
                 continue
             # Check if an alternative was completed
             alts = alternatives.get(course, [])
-            if any(alt in completed_set for alt in alts):
+            if any(_normalize_code(alt) in completed_set for alt in alts):
                 completed_in_cat += 1
                 continue
             still_needed.append(course)
@@ -620,8 +633,9 @@ def get_remaining_courses(plan: dict, completed_codes: list[str]) -> dict[str, l
 
 def check_prereqs_met(course_code: str, completed_codes: set[str], plan: dict) -> bool:
     """Check if all prerequisites for a course are satisfied."""
+    normalized_completed = {_normalize_code(c) for c in completed_codes}
     prereqs = plan.get("prerequisite_chains", {}).get(course_code, [])
-    return all(p in completed_codes for p in prereqs)
+    return all(_normalize_code(p) in normalized_completed for p in prereqs)
 
 
 def get_available_courses(plan: dict, completed_codes: list[str]) -> list[dict]:
