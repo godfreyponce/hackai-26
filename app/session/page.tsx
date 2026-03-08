@@ -21,9 +21,11 @@ export default function SessionPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [showPrevious, setShowPrevious] = useState(false);
-  const [targetSemester, setTargetSemester] = useState("");
-  const transcriptData = useRef<any>(null);
-  
+  const [targetSemester, setTargetSemester] = useState("Fall 2026");
+  const [conciseMode, setConciseMode] = useState(true); // Default ON for voice
+  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
+  const [planGenerated, setPlanGenerated] = useState(false);
+
   // Previous semesters (expandable)
   const [previousSemesters, setPreviousSemesters] = useState<Record<string, Course[]>>({});
   
@@ -37,7 +39,7 @@ export default function SessionPage() {
       isInProgress: true,
     },
     recommended: {
-      title: "Recommended Courses",
+      title: "Recommended for Fall 2026",
       credits: 0,
       courses: [],
     },
@@ -51,11 +53,14 @@ export default function SessionPage() {
   const chatHistory = useRef<any[]>([]);
   const messageCount = useRef(0);
   const transcriptCtx = useRef<string | null>(null);
+  const transcriptGpa = useRef<number | null>(null);
+  const transcriptCredits = useRef<number>(0);
   
   // Voice feature refs
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const recognitionRef = useRef<any>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isPlayingRef = useRef(false); // Guard against audio self-interrupt
 
   // Load transcript data into columns on mount
   useEffect(() => {
@@ -74,11 +79,14 @@ export default function SessionPage() {
           `Student Name: ${t.student_name}`,
           `Student ID: ${t.student_id}`,
           `Major: ${t.major}`,
-          t.minor ? `Minor: ${t.minor}` : null,
           `GPA: ${t.gpa}`,
           `Total Credit Hours: ${t.total_credit_hours}`,
           `Completed Courses: ${courseListText}`,
-        ].filter(Boolean).join("\n");
+        ].join("\n");
+
+        // Store GPA and credits for plan generation
+        transcriptGpa.current = t.gpa || null;
+        transcriptCredits.current = t.total_credit_hours || 0;
 
         // Separate in-progress (IP grade or current semester) from completed
         const inProgressCourses: Course[] = [];
@@ -116,56 +124,12 @@ export default function SessionPage() {
 
         // Set previous semesters
         setPreviousSemesters(completedBySemester);
-
-        // Save transcript for later when user picks a semester
-        transcriptData.current = t;
       } catch {}
     }
   }, []);
 
-  // Call backend recommend engine (uses verified CS flowchart semester sequence)
-  const fetchRecommendations = async (transcript: any) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/recommend/from-data`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(transcript),
-      });
-      if (!res.ok) return;
-      const plan = await res.json();
-      
-      if (plan.recommendations && plan.recommendations.length > 0) {
-        const recCourses: Course[] = plan.recommendations.map((r: any) => ({
-          id: r.course_code + "-rec-" + Math.random().toString(36).substr(2, 9),
-          code: r.course_code,
-          title: r.course_name,
-          professor: targetSemester || "Next Semester",
-          badge: "Core Requirement" as const,
-          whyText: r.reason,
-        }));
-
-        // Stagger courses onto the board one at a time (800ms apart)
-        recCourses.forEach((course, index) => {
-          setTimeout(() => {
-            setColumns(prev => ({
-              ...prev,
-              recommended: {
-                ...prev.recommended,
-                credits: (index + 1) * 3,
-                courses: [...prev.recommended.courses, course],
-              }
-            }));
-          }, index * 800);
-        });
-      }
-    } catch (err) {
-      console.error("Failed to fetch recommendations:", err);
-    }
-  };
-
   // Update recommended column title when target semester changes
   useEffect(() => {
-    if (!targetSemester) return;
     setColumns(prev => ({
       ...prev,
       recommended: {
@@ -223,8 +187,16 @@ export default function SessionPage() {
   }, []);
 
   const playAudio = async (text: string, onEnded?: () => void) => {
-    setAdvisorStatus("speaking");
-    setIsSpeaking(true);
+    // Guard: don't interrupt ongoing playback
+    if (isPlayingRef.current) return;
+    isPlayingRef.current = true;
+
+    // Stop speech recognition so we don't pick up our own audio output
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch {}
+    }
+    setIsRecording(false);
 
     try {
       const res = await fetch("/api/speak", {
@@ -238,62 +210,54 @@ export default function SessionPage() {
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
 
-      if (audioRef.current) audioRef.current.pause();
+      // Clean up previous audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
 
       const audio = new Audio(url);
       audioRef.current = audio;
 
+      // Set state AFTER audio is ready (playAudio owns state transitions)
+      setAdvisorStatus("speaking");
+      setIsSpeaking(true);
+
       audio.onended = () => {
+        URL.revokeObjectURL(url);
+        isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("idle");
+        setAdvisorStatus("listening");
         if (onEnded) onEnded();
       };
 
       audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("idle");
+        setAdvisorStatus("listening");
         if (onEnded) onEnded();
       };
 
-      await audio.play().catch(() => {
-        // Autoplay blocked — fall back to browser TTS
-        fallbackSpeak(text, onEnded);
+      await audio.play().catch(e => {
+        console.warn("Autoplay was blocked by browser:", e);
+        URL.revokeObjectURL(url);
+        isPlayingRef.current = false;
+        setIsSpeaking(false);
+        setAdvisorStatus("listening");
+        if (onEnded) onEnded();
       });
 
     } catch (error) {
-      // ElevenLabs failed — fall back to browser speech
-      console.warn("ElevenLabs failed, using browser TTS");
-      fallbackSpeak(text, onEnded);
-    }
-  };
-
-  // Browser-native TTS fallback
-  const fallbackSpeak = (text: string, onEnded?: () => void) => {
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.05;
-      utterance.pitch = 1.0;
-      utterance.onend = () => {
-        setIsSpeaking(false);
-        setAdvisorStatus("idle");
-        if (onEnded) onEnded();
-      };
-      utterance.onerror = () => {
-        setIsSpeaking(false);
-        setAdvisorStatus("idle");
-        if (onEnded) onEnded();
-      };
-      window.speechSynthesis.speak(utterance);
-    } else {
-      // No TTS available at all — just move on
+      console.error("Audio playback error:", error);
+      isPlayingRef.current = false;
       setIsSpeaking(false);
-      setAdvisorStatus("idle");
+      setAdvisorStatus("listening");
       if (onEnded) onEnded();
     }
   };
 
   const startListening = () => {
-    if (sessionEnded) return;
     if (recognitionRef.current && !isRecording) {
       setIsRecording(true);
       setAdvisorStatus("listening");
@@ -323,26 +287,66 @@ export default function SessionPage() {
   }, []);
 
   // Detect semester from user text (e.g. "Fall 2026", "Spring 2027")
-  // Also detect from AI response text
   const detectTargetSemester = (text: string) => {
     const matches = text.match(SEMESTER_REGEX);
     if (matches && matches.length > 0) {
+      // Capitalize properly: "fall 2026" -> "Fall 2026"
       const raw = matches[matches.length - 1];
       const parts = raw.trim().split(/\s+/);
       const season = parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
       let year = parts[1] || "";
       if (year.length === 2) year = "20" + year;
       const formatted = `${season} ${year}`;
-      
-      // Only fetch if semester changed
-      if (formatted !== targetSemester) {
-        setTargetSemester(formatted);
-        // Fetch recommendations when user picks a semester
-        if (transcriptData.current) {
-          fetchRecommendations(transcriptData.current);
-        }
-      }
+      setTargetSemester(formatted);
     }
+  };
+
+  // Fetch real course title + best professor from backend and update the card
+  const fetchAndEnrichCourse = async (code: string) => {
+    try {
+      const encoded = encodeURIComponent(code);
+      const [courseRes, profRes] = await Promise.allSettled([
+        fetch(`${API_BASE}/api/courses/${encoded}`),
+        fetch(`${API_BASE}/api/courses/${encoded}/professor`),
+      ]);
+
+      let title: string | undefined;
+      let professor: string | undefined;
+      let aRate: number | undefined;
+
+      if (courseRes.status === "fulfilled" && courseRes.value.ok) {
+        const d = await courseRes.value.json();
+        if (d.name) title = d.name;
+      }
+      if (profRes.status === "fulfilled" && profRes.value.ok) {
+        const d = await profRes.value.json();
+        if (d.professor) {
+          professor = d.display || d.professor;
+          aRate = d.a_rate;
+        } else {
+          professor = "TBD";
+        }
+      } else {
+        professor = "TBD";
+      }
+
+      if (!title && !professor) return;
+
+      setColumns(prev => {
+        const updated: Record<string, any> = {};
+        for (const key of Object.keys(prev)) {
+          updated[key] = {
+            ...prev[key],
+            courses: prev[key].courses.map((c: any) =>
+              c.code === code
+                ? { ...c, ...(title && { title }), ...(professor && { professor }), ...(aRate !== undefined && { aRate }) }
+                : c
+            ),
+          };
+        }
+        return updated;
+      });
+    } catch {}
   };
 
   // Helper to parse course codes from AI text and add to recommended
@@ -352,17 +356,20 @@ export default function SessionPage() {
 
     if (uniqueCodes.length === 0) return;
 
+    let addedCodes: string[] = [];
+
     setColumns((prevCols) => {
       const allExisting = Object.values(prevCols).flatMap(col => col.courses.map((c: any) => c.code));
       const newCodes = uniqueCodes.filter(code => !allExisting.includes(code));
-      
+
       if (newCodes.length === 0) return prevCols;
+      addedCodes = newCodes;
 
       const newCourses = newCodes.map(code => ({
         id: code + "-" + Math.random().toString(36).substr(2, 9),
         code: code,
-        title: "Recommended Course",
-        professor: "TBD",
+        title: code, // placeholder until enriched
+        professor: "Loading...",
         badge: "Core Requirement" as const,
         whyText: "Matches your career interests and degree plan.",
       }));
@@ -376,23 +383,21 @@ export default function SessionPage() {
         }
       };
     });
+
+    // Enrich asynchronously (won't block the voice response)
+    for (const code of uniqueCodes) {
+      fetchAndEnrichCourse(code);
+    }
   };
 
   const handleSend = async (userText: string) => {
-    if (!userText.trim() || isLoading || sessionEnded) return;
+    if (!userText.trim() || isLoading) return;
 
     messageCount.current += 1;
     setIsLoading(true);
-    setAdvisorStatus("speaking");
-    setIsSpeaking(true);
 
     // Detect target semester from user message
     detectTargetSemester(userText);
-
-    // End session after ~4 interactions
-    if (messageCount.current >= 4) {
-      setSessionEnded(true);
-    }
 
     try {
       const res = await fetch(`${API_BASE}/api/voice/chat`, {
@@ -402,23 +407,18 @@ export default function SessionPage() {
           message: userText,
           history: chatHistory.current,
           transcript_context: transcriptCtx.current,
+          concise: conciseMode,
         }),
       });
 
       if (res.ok) {
         const data = await res.json();
         chatHistory.current = data.history;
+        
+        // Parse the advisor's text and update board
+        await extractAndAddCourses(data.reply);
 
-        // Also detect semester from AI response
-        detectTargetSemester(data.reply);
-
-        playAudio(data.reply, () => {
-          if (!sessionEnded && messageCount.current < 4) {
-            startListening();
-          } else {
-            setAdvisorStatus("idle");
-          }
-        });
+        playAudio(data.reply, startListening);
       } else {
         playAudio("I had trouble understanding that. Could you try again?", startListening);
       }
@@ -449,6 +449,72 @@ export default function SessionPage() {
     document.body.removeChild(a);
   }, [columns]);
 
+  const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string}) => {
+    const newColumns: Record<string, any> = {
+      inProgress: columns.inProgress, // preserve in-progress
+    };
+
+    plan.semesters.forEach((sem: any) => {
+      const key = sem.semester.replace(/\s+/g, "_");
+      newColumns[key] = {
+        title: sem.semester,
+        credits: sem.total_credits || 0,
+        courses: (sem.courses || []).map((c: any) => ({
+          id: `${c.code}-${Math.random().toString(36).substr(2, 9)}`,
+          code: c.code,
+          title: c.title || c.code,
+          professor: "Loading...",
+          badge: "Degree Plan" as const,
+          whyText: c.reason || "Part of your degree plan.",
+        })),
+      };
+    });
+
+    setColumns(newColumns);
+    setPlanGenerated(true);
+
+    // Fetch professor data for every planned course in background
+    plan.semesters.flatMap((s: any) => s.courses || []).forEach((c: any) => {
+      fetchAndEnrichCourse(c.code);
+    });
+  };
+
+  const handleGeneratePlan = async () => {
+    if (isGeneratingPlan || !transcriptCtx.current) return;
+    setIsGeneratingPlan(true);
+
+    try {
+      const t = JSON.parse(sessionStorage.getItem("transcriptData") || "{}");
+      const res = await fetch(`${API_BASE}/api/recommend/full-plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcript_context: transcriptCtx.current,
+          current_semester: targetSemester,
+          total_credit_hours: t.total_credit_hours || 0,
+          gpa: t.gpa || null,
+        }),
+      });
+
+      if (res.ok) {
+        const plan = await res.json();
+        if (plan.semesters && plan.semesters.length > 0) {
+          buildColumnsFromPlan(plan);
+          playAudio(
+            `Your full ${plan.total_semesters}-semester plan is ready! Graduating ${plan.graduation_semester}. You can drag courses around to customize it.`,
+            startListening
+          );
+        } else {
+          playAudio("I had trouble building the plan. Try asking me about specific semesters instead.", startListening);
+        }
+      }
+    } catch {
+      playAudio("Couldn't generate the plan right now. Please try again.", startListening);
+    }
+
+    setIsGeneratingPlan(false);
+  };
+
   const semesterKeys = Object.keys(previousSemesters).sort();
   const totalCompletedCredits = semesterKeys.reduce(
     (sum, key) => sum + previousSemesters[key].length * 3, 0
@@ -456,8 +522,16 @@ export default function SessionPage() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col pt-24 pb-12 px-8">
+      {/* Concise Mode Toggle - Top Right */}
+      <button
+        onClick={() => setConciseMode(p => !p)}
+        className="fixed top-6 right-6 px-3 py-1.5 rounded-full border border-white/10 text-xs text-muted-foreground hover:border-violet-400/40 transition-all z-50"
+      >
+        {conciseMode ? "⚡ Concise" : "💬 Detailed"}
+      </button>
+
       <div className="max-w-7xl mx-auto w-full flex flex-col items-center">
-        
+
         {/* Top Center: Voice Avatar */}
         <div className="flex flex-col items-center mb-16 relative">
            <AIAvatar isSpeaking={isSpeaking} status={advisorStatus} />
@@ -470,7 +544,7 @@ export default function SessionPage() {
            )}
 
            {/* Manual Mic Override if disabled */}
-           {advisorStatus === "idle" && !sessionEnded && !isLoading && (
+           {advisorStatus === "idle" && !isLoading && (
              <button 
                onClick={handleMicToggle}
                className="mt-6 px-5 py-2.5 rounded-full border border-violet/20 flex items-center gap-2.5 hover:bg-violet/10 hover:border-violet text-muted-foreground transition-all shadow-sm"
@@ -479,6 +553,19 @@ export default function SessionPage() {
                Tap to speak
              </button>
            )}
+
+           {/* Generate My Plan Button */}
+           <button
+             onClick={handleGeneratePlan}
+             disabled={isGeneratingPlan || isLoading}
+             className="mt-4 px-6 py-3 rounded-xl bg-violet-600/80 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm flex items-center gap-2.5 shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:shadow-[0_0_30px_rgba(139,92,246,0.5)] transition-all"
+           >
+             {isGeneratingPlan ? (
+               <><Loader2 className="w-4 h-4 animate-spin" /> Generating Plan...</>
+             ) : (
+               <><ChevronRight className="w-4 h-4" /> Generate My Full Plan</>
+             )}
+           </button>
         </div>
 
         {/* Expandable Previous Semesters */}
@@ -532,6 +619,29 @@ export default function SessionPage() {
           </div>
         )}
 
+        {/* Generate My Plan Button - visible after 3+ exchanges */}
+        {messageCount.current >= 3 && !planGenerated && (
+          <div className="w-full flex justify-center mb-8">
+            <button
+              onClick={handleGeneratePlan}
+              disabled={isGeneratingPlan}
+              className="px-8 py-4 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white font-[var(--font-heading)] font-semibold text-lg flex items-center gap-3 shadow-[0_0_30px_rgba(123,47,190,0.3)] hover:scale-105 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isGeneratingPlan ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Generating Plan...
+                </>
+              ) : (
+                <>
+                  <span className="text-xl">🎓</span>
+                  Generate My Plan
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
         {/* Below Avatar: Drag and Drop Interactive Board */}
         <div className="w-full">
            <DndBoard columns={columns} setColumns={setColumns} />
@@ -540,7 +650,7 @@ export default function SessionPage() {
       </div>
 
       {/* Floating Export Button */}
-      <div className={`fixed bottom-12 right-12 transition-all duration-1000 z-50 ${sessionEnded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none'}`}>
+      <div className="fixed bottom-12 right-12 transition-all duration-500 z-50">
          <button onClick={handleExportPlan} className="px-6 py-4 rounded-xl bg-orange text-foreground font-[var(--font-heading)] font-semibold text-lg flex items-center gap-3 shadow-[0_0_30px_rgba(232,119,34,0.3)] hover:scale-105 transition-all">
            <Download className="w-5 h-5" />
            Export Final Plan

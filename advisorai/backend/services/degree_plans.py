@@ -11,6 +11,48 @@ Parsed from the official UTD degree plan PDFs in data/.
 
 from typing import Optional
 
+# ─── Course Difficulty Tiers ─────────────────────────────────────
+# Difficulty tier 1 = manageable, 3 = known to be brutal
+COURSE_DIFFICULTY = {
+    # Tier 1 — straightforward or lighter workload
+    "CS 1136": 1, "CS 1337": 1, "CS 2305": 1, "CS 2336": 1,
+    "CS 3354": 1, "CS 4141": 1, "CS 1436": 1,
+    # Tier 2 — moderate
+    "CS 3305": 2, "CS 3341": 2, "CS 4337": 2, "CS 4347": 2,
+    "CS 4354": 2, "CS 4361": 2, "CS 4375": 2, "CS 4389": 2,
+    "CS 3377": 2, "CS 2340": 2,
+    # Tier 3 — difficult / high failure rate
+    "CS 3345": 3, "CS 4348": 3, "CS 4349": 3, "CS 4384": 3,
+    "CS 4485": 3,
+    # Math
+    "MATH 2413": 2, "MATH 2414": 2, "MATH 2418": 2, "MATH 2419": 3,
+    # Physics
+    "PHYS 2325": 2, "PHYS 2326": 2,
+}
+
+# GPA thresholds for max difficulty score per semester
+GPA_MAX_DIFFICULTY = {
+    (3.5, 4.0): 14,   # high achiever — no restrictions
+    (3.0, 3.5): 11,   # solid — avoid stacking 3 tier-3 courses
+    (2.5, 3.0): 9,    # average — max 1 tier-3 per semester
+    (0.0, 2.5): 7,    # struggling — protect from overloading
+}
+
+TOTAL_DEGREE_HOURS = 124
+
+
+def get_semester_difficulty_score(course_codes: list[str]) -> int:
+    """Sum of difficulty tiers for all courses in a semester."""
+    return sum(COURSE_DIFFICULTY.get(c, 2) for c in course_codes)
+
+
+def get_max_difficulty_for_gpa(gpa: float) -> int:
+    """Get the maximum semester difficulty score for a given GPA."""
+    for (low, high), max_diff in GPA_MAX_DIFFICULTY.items():
+        if low <= gpa <= high:
+            return max_diff
+    return 9  # safe default
+
 
 # ─── CS Degree Plan (BS, 2025-2026) ───────────────────────────────
 
@@ -423,3 +465,75 @@ def _detect_current_semester(completed_codes: set[str], semester_seq: dict) -> i
 
     # All semesters mostly complete — they're at the end
     return max(semesters.keys()) + 1
+
+
+# ─── Course Difficulty Tiers ──────────────────────────────────────
+# Tier 1 = manageable, 2 = moderate, 3 = known to be brutal
+COURSE_DIFFICULTY: dict[str, int] = {
+    # Tier 1 — lighter workload
+    "CS 1436": 1, "CS 1200": 1, "ECS 1100": 1,
+    "CS 1337": 1, "CS 2305": 1, "CS 2336": 1, "CS 2337": 1,
+    "CS 3354": 1, "CS 4141": 1, "CS 3162": 1, "ECS 2390": 1,
+    # Tier 2 — moderate
+    "CS 2340": 2, "CS 3305": 2, "CS 3341": 2, "CS 3377": 2,
+    "CS 4337": 2, "CS 4341": 2, "CS 4347": 2,
+    "CS 4354": 2, "CS 4361": 2, "CS 4375": 2, "CS 4389": 2,
+    "MATH 2413": 2, "MATH 2414": 2, "MATH 2418": 2,
+    "PHYS 2325": 2, "PHYS 2326": 2,
+    # Tier 3 — difficult / high failure rate
+    "CS 3345": 3, "CS 4348": 3, "CS 4349": 3, "CS 4384": 3,
+    "CS 4485": 3, "MATH 2419": 3,
+}
+
+# GPA thresholds for max difficulty score per semester
+GPA_MAX_DIFFICULTY: dict[tuple[float, float], int] = {
+    (3.5, 4.0): 14,   # high achiever — no restrictions
+    (3.0, 3.5): 11,   # solid — avoid stacking 3 tier-3 courses
+    (2.5, 3.0): 9,    # average — max 1 tier-3 per semester
+    (0.0, 2.5): 7,    # struggling — protect from overloading
+}
+
+
+def get_semester_difficulty_score(course_codes: list[str]) -> int:
+    """Sum of difficulty tiers for all courses in a semester."""
+    return sum(COURSE_DIFFICULTY.get(c, 2) for c in course_codes)
+
+
+def get_max_difficulty_for_gpa(gpa: float) -> int:
+    for (low, high), max_diff in GPA_MAX_DIFFICULTY.items():
+        if low <= gpa <= high:
+            return max_diff
+    return 9  # safe default
+
+
+def get_fallback_courses() -> list[dict]:
+    """
+    Return a minimal hardcoded list of CS courses as JSON-serializable dicts.
+    Used when the Nebula API is unavailable and no local cache exists.
+    """
+    courses = []
+    for plan in [CS_DEGREE_PLAN, CE_DEGREE_PLAN, SE_DEGREE_PLAN]:
+        prereqs = plan.get("prerequisite_chains", {})
+        for cat in plan["categories"].values():
+            for code in cat.get("courses", []):
+                subject, *rest = code.split()
+                number = rest[0] if rest else ""
+                courses.append({
+                    "_id": code.replace(" ", ""),
+                    "subject_prefix": subject,
+                    "course_number": number,
+                    "title": code,
+                    "description": f"{cat.get('label', '')} requirement",
+                    "credit_hours": "3",
+                    "prerequisites": None,
+                    "_prereq_codes": prereqs.get(code, []),
+                })
+    # Deduplicate by course id
+    seen: set[str] = set()
+    unique = []
+    for c in courses:
+        key = f"{c['subject_prefix']} {c['course_number']}"
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+    return unique

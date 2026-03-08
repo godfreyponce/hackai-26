@@ -26,8 +26,10 @@ export interface Course {
   code: string;
   title: string;
   professor: string;
-  badge: "Core Requirement" | "Track Elective";
+  badge: "Core Requirement" | "Track Elective" | "Degree Plan";
   whyText: string;
+  aRate?: number; // A-rate percentage (0-100)
+  credits?: number; // credit hours (default 3)
 }
 
 interface ColumnProps {
@@ -66,17 +68,38 @@ function SortableCourseCard({ course, isCompleted, index }: { course: Course, is
         badge={course.badge}
         whyText={course.whyText}
         isCompleted={isCompleted}
-        delay={index * 100} 
+        delay={index * 100}
+        aRate={course.aRate}
       />
     </div>
   );
 }
 
+// Credit warning helper
+function getCreditWarning(credits: number, semester: string): { color: string; warning: string | null } {
+  const isSummer = semester.toLowerCase().includes("summer");
+  const max = isSummer ? 9 : 18;
+  const min = 12;
+
+  if (credits > max) {
+    return { color: "text-red-400", warning: "Exceeds max credits" };
+  }
+  if (credits > 15 && !isSummer) {
+    return { color: "text-yellow-400", warning: "Heavy load" };
+  }
+  if (credits > 0 && credits < min && !isSummer) {
+    return { color: "text-yellow-400", warning: "Below 12 hrs" };
+  }
+  return { color: "text-green-400", warning: null };
+}
+
 // Droppable Column Component
 function DndColumn({ id, title, credits, courses, isCompleted, isInProgress }: ColumnProps) {
   const borderColor = isInProgress ? "border-amber-500/30" : isCompleted ? "border-green-500/20" : "border-violet/10";
+  const creditStatus = getCreditWarning(credits, title);
+
   return (
-    <div className={`flex flex-col bg-[#141428]/40 border ${borderColor} rounded-xl p-6 min-h-[400px]`}>
+    <div className={`flex flex-col bg-[#141428]/40 border ${borderColor} rounded-xl p-6 min-h-[400px] min-w-[300px] flex-shrink-0`}>
       <div className="mb-6 flex justify-between items-end">
         <div>
           <h2
@@ -87,7 +110,12 @@ function DndColumn({ id, title, credits, courses, isCompleted, isInProgress }: C
           >
             {isInProgress && "🟡 "}{title}
           </h2>
-          <p className="text-muted-foreground text-sm mt-1">{credits} credits</p>
+          <div className="flex items-center gap-2 mt-1">
+            <span className={`text-sm ${creditStatus.color}`}>{credits} credits</span>
+            {creditStatus.warning && (
+              <span className="text-xs text-red-400/70">⚠ {creditStatus.warning}</span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -189,7 +217,7 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
         [activeColumnId]: {
           ...prev[activeColumnId],
           courses: activeItems.filter((c) => c.id !== activeId),
-          credits: prev[activeColumnId].credits - 3, // Assuming 3 for demo
+          credits: prev[activeColumnId].credits - (activeItems[activeIndex]?.credits ?? 3),
         },
         [overColumnId]: {
           ...prev[overColumnId],
@@ -198,7 +226,7 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
             activeItems[activeIndex],
             ...overItems.slice(newIndex, overItems.length),
           ],
-          credits: prev[overColumnId].credits + 3,
+          credits: prev[overColumnId].credits + (activeItems[activeIndex]?.credits ?? 3),
         },
       };
     });
@@ -240,7 +268,7 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-32">
+      <div className="flex flex-nowrap overflow-x-auto gap-8 pb-32 -mx-2 px-2" style={{ scrollbarWidth: 'thin' }}>
         {Object.keys(columns).map((colId) => (
           <DndColumn
             key={colId}
@@ -263,6 +291,7 @@ export function DndBoard({ columns, setColumns }: DndBoardProps) {
               professor={activeCourse.professor}
               badge={activeCourse.badge}
               whyText={activeCourse.whyText}
+              aRate={activeCourse.aRate}
             />
           </div>
         ) : null}
