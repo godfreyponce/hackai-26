@@ -38,7 +38,6 @@ export function VoiceOrb({
   const chatHistory = useRef<HistoryMessage[]>([]);
   const isComponentMounted = useRef(true);
   const transcriptCtxRef = useRef(transcriptContext);
-  const ignoreAudioRef = useRef(false); // STIRCT TURN-TAKING LOCK
 
   // Sync transcript context so the closure always has the latest
   useEffect(() => {
@@ -55,13 +54,13 @@ export function VoiceOrb({
       
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
-        recognition.continuous = true;
+        recognition.continuous = false; // STRICT SEQUENTIAL. NO CONTINUOUS LISTENING.
         recognition.interimResults = true;
         recognition.lang = "en-US";
 
         recognition.onresult = (event: any) => {
-          // STRICT TURN TAKING: Ignore any events that fired while speaking
-          if (ignoreAudioRef.current || orbState === "SPEAKING" || orbState === "THINKING") return;
+          // STRICT TURN TAKING: If not LISTENING, do absolutely nothing.
+          if (orbState !== "LISTENING") return;
 
           let latestTranscript = "";
           for (let i = 0; i < event.results.length; i++) {
@@ -91,11 +90,12 @@ export function VoiceOrb({
         };
 
         recognition.onend = () => {
-          // If we are marked as LISTENING but the engine stopped itself, restart it
-          // UNLESS component unmounted
-          if (isComponentMounted.current) {
-            // We handle explicit stops via state machine. 
-            // The continuous=true usually keeps it alive, but occasionally it drops.
+          // If we are supposed to be LISTENING but the engine stopped (e.g., pause in continuous=false)
+          // we need to spin it back up so it keeps waiting for the user to finish their thought.
+          if (isComponentMounted.current && recognitionRef.current && orbState === "LISTENING") {
+            try { 
+              recognitionRef.current.start(); 
+            } catch {}
           }
         };
 
@@ -115,7 +115,6 @@ export function VoiceOrb({
             setAiText(data.reply);
             aiTextRef.current = data.reply;
             onAIResponse(data.reply);
-            ignoreAudioRef.current = true; // Lock before playing
             playAudioResponse(data.reply);
           }
         }
@@ -124,7 +123,6 @@ export function VoiceOrb({
           const fallbackMsg = "Hey! I'm Comet Advisor. How can I help you plan your courses?";
           setAiText(fallbackMsg);
           aiTextRef.current = fallbackMsg;
-          ignoreAudioRef.current = true; // Lock before playing
           playAudioResponse(fallbackMsg);
         }
       }
@@ -142,9 +140,8 @@ export function VoiceOrb({
   const playAudioResponse = async (text: string) => {
     try {
       setOrbState("SPEAKING");
-      ignoreAudioRef.current = true;
       
-      // Force mic off
+      // Physically stop the mic from listening
       if (recognitionRef.current) {
          try { recognitionRef.current.abort(); } catch {}
       }
@@ -167,10 +164,9 @@ export function VoiceOrb({
       audio.onended = () => {
         URL.revokeObjectURL(url);
         if (isComponentMounted.current) {
-          ignoreAudioRef.current = false;
           setOrbState("LISTENING");
           setAiText("");
-          // Turn mic back on for user's turn
+          // Turn mic back on for user's turn physically
           if (recognitionRef.current) { 
              try { recognitionRef.current.start(); } catch {} 
           }
@@ -180,7 +176,6 @@ export function VoiceOrb({
       audio.onerror = () => {
         URL.revokeObjectURL(url);
         if (isComponentMounted.current) {
-          ignoreAudioRef.current = false;
           setOrbState("LISTENING");
           setAiText("");
           if (recognitionRef.current) { 
@@ -192,8 +187,8 @@ export function VoiceOrb({
       await audio.play().catch((e) => {
         console.warn("Autoplay blocked", e);
         if (isComponentMounted.current) {
-          ignoreAudioRef.current = false;
           setOrbState("LISTENING");
+          setAiText("");
           if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
         }
       });
@@ -201,7 +196,6 @@ export function VoiceOrb({
       console.warn("ElevenLabs TTS failed, using browser fallback:", e);
       // Fallback to browser TTS
       if (typeof window !== "undefined" && window.speechSynthesis) {
-        ignoreAudioRef.current = true;
         setOrbState("SPEAKING");
         
         if (recognitionRef.current) {
@@ -213,7 +207,6 @@ export function VoiceOrb({
         
         utterance.onend = () => {
           if (isComponentMounted.current) {
-            ignoreAudioRef.current = false;
             setOrbState("LISTENING");
             setAiText("");
             if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
@@ -222,7 +215,6 @@ export function VoiceOrb({
         
         utterance.onerror = () => {
           if (isComponentMounted.current) {
-            ignoreAudioRef.current = false;
             setOrbState("LISTENING");
             setAiText("");
             if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
@@ -232,8 +224,8 @@ export function VoiceOrb({
         stopAudioPlayback();
         window.speechSynthesis.speak(utterance);
       } else {
-        ignoreAudioRef.current = false;
         setOrbState("LISTENING");
+        setAiText("");
         if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
       }
     }
@@ -263,7 +255,6 @@ export function VoiceOrb({
   const toggleMic = () => {
     if (orbState === "IDLE") {
       setOrbState("LISTENING");
-      ignoreAudioRef.current = false;
       setAiText("");
       if (recognitionRef.current) {
         try { recognitionRef.current.start(); } catch (e) {
@@ -283,7 +274,6 @@ export function VoiceOrb({
     if (!text.trim() || orbState !== "LISTENING") return;
 
     // Transition to thinking, pause mic completely
-    ignoreAudioRef.current = true;
     if (recognitionRef.current) {
       try { recognitionRef.current.abort(); } catch {}
     }
