@@ -8,10 +8,13 @@ recommendations, tailored to the student's transcript and career goals.
 import os
 import logging
 import json
+import asyncio
 from typing import Optional
 
 from dotenv import load_dotenv
 import httpx
+from google import genai
+from google.genai import types
 
 from models.schemas import CourseRecommendation, TranscriptData
 
@@ -22,6 +25,26 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+MODEL = "gemini-2.5-flash"
+
+# Initialize google-genai client
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+CHAT_SYSTEM_PROMPT = """You are Comet Advisor, a friendly, knowledgeable AI academic advisor at UT Dallas.
+
+Your role:
+- Help students plan their courses and understand degree requirements
+- Give warm, encouraging advice about academics
+- Answer questions about UTD courses, prerequisites, and degree plans
+- Help students think through career goals and how courses align
+
+Guidelines:
+- Be concise (2-4 sentences per response)
+- Be conversational and natural — like talking to a friendly advisor
+- Never use markdown formatting (no **, ##, etc.) — your responses will be spoken aloud
+- Reference UTD-specific things when relevant (Comet Card, ECS building, etc.)
+- If you don't know something specific, say so honestly
+- Guide the conversation toward understanding what the student needs"""
 
 
 async def generate_advisor_message(
@@ -192,3 +215,57 @@ def _fallback_message(
     lines.append("Good luck next semester! Let me know if you have any questions.")
 
     return "\n".join(lines)
+
+
+async def chat_with_advisor(
+    conversation_history: list[dict],
+    user_message: str,
+) -> str:
+    """
+    Multi-turn conversation with the AI academic advisor via Gemini.
+
+    Args:
+        conversation_history: Previous messages [{role: "user"|"model", content: "..."}]
+        user_message: The new message from the student
+
+    Returns:
+        Advisor's response text
+    """
+    if not client:
+        return "I'm not connected right now. Please make sure the Gemini API key is set up."
+
+    # Convert history to Gemini Content format
+    gemini_history = []
+    for msg in conversation_history:
+        role = "model" if msg["role"] in ("assistant", "model") else "user"
+        gemini_history.append(
+            types.Content(
+                role=role,
+                parts=[types.Part(text=msg["content"])]
+            )
+        )
+
+    # Append the new user message
+    gemini_history.append(
+        types.Content(
+            role="user",
+            parts=[types.Part(text=user_message)]
+        )
+    )
+
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL,
+            contents=gemini_history,
+            config=types.GenerateContentConfig(system_instruction=CHAT_SYSTEM_PROMPT),
+        )
+
+        assistant_response = response.text
+        logger.info(f"Chat response generated ({len(assistant_response)} chars)")
+        return assistant_response
+
+    except Exception as e:
+        logger.error(f"Gemini API error in chat: {e}")
+        raise
+

@@ -14,60 +14,120 @@ interface Message {
   isAdvisor: boolean;
 }
 
-const ADVISOR_QUESTIONS = [
-  "What is your current major or intended major?",
-  "What is your goal after graduation — industry, grad school, or still deciding?",
-  "Are you more interested in software engineering, AI/ML, systems, or something else?",
-];
+interface ChatHistoryItem {
+  role: "user" | "model";
+  content: string;
+}
 
 export default function SessionPage() {
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState(1);
-  const [messages, setMessages] = useState<Message[]>([
-    { id: "1", content: ADVISOR_QUESTIONS[0], isAdvisor: true },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [advisorStatus, setAdvisorStatus] = useState<"listening" | "speaking">("listening");
+  const [advisorStatus, setAdvisorStatus] = useState<"listening" | "speaking">("speaking");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const chatHistory = useRef<ChatHistoryItem[]>([]);
   const answersRef = useRef<string[]>([]);
+  const messageCount = useRef(0);
 
-  const handleSend = useCallback(() => {
-    if (!inputValue.trim()) return;
+  // Start conversation with Gemini greeting on mount
+  useEffect(() => {
+    const startChat = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/voice/start`, {
+          method: "POST",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setMessages([{
+            id: "greeting",
+            content: data.reply,
+            isAdvisor: true,
+          }]);
+          chatHistory.current = data.history;
+          setAdvisorStatus("listening");
+          setIsSpeaking(false);
+        }
+      } catch (err) {
+        // Fallback greeting
+        setMessages([{
+          id: "greeting",
+          content: "Hey there! I'm Comet Advisor. What are you looking for this semester?",
+          isAdvisor: true,
+        }]);
+        setAdvisorStatus("listening");
+        setIsSpeaking(false);
+      }
+    };
+    startChat();
+  }, []);
 
-    // Store student's answer
-    answersRef.current.push(inputValue.trim());
+  const handleSend = useCallback(async () => {
+    if (!inputValue.trim() || isLoading) return;
 
-    // Add student message
+    const userText = inputValue.trim();
+    answersRef.current.push(userText);
+    messageCount.current += 1;
+
+    // Add student message immediately
     const studentMessage: Message = {
       id: Date.now().toString(),
-      content: inputValue.trim(),
+      content: userText,
       isAdvisor: false,
     };
     setMessages((prev) => [...prev, studentMessage]);
     setInputValue("");
+    setIsLoading(true);
+    setAdvisorStatus("speaking");
+    setIsSpeaking(true);
 
-    // Simulate advisor responding
-    if (currentStep < 3) {
-      setAdvisorStatus("speaking");
-      setIsSpeaking(true);
+    // Update step progress
+    const newStep = Math.min(messageCount.current, 3);
+    setCurrentStep(newStep);
 
-      setTimeout(() => {
-        const nextQuestion: Message = {
+    try {
+      // Call Gemini via our backend
+      const res = await fetch(`${API_BASE}/api/voice/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: userText,
+          history: chatHistory.current,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        chatHistory.current = data.history;
+
+        const advisorMessage: Message = {
           id: (Date.now() + 1).toString(),
-          content: ADVISOR_QUESTIONS[currentStep],
+          content: data.reply,
           isAdvisor: true,
         };
-        setMessages((prev) => [...prev, nextQuestion]);
-        setCurrentStep((prev) => prev + 1);
-        setIsSpeaking(false);
-        setAdvisorStatus("listening");
-      }, 1500);
-    } else {
-      setCurrentStep(3);
+        setMessages((prev) => [...prev, advisorMessage]);
+      } else {
+        setMessages((prev) => [...prev, {
+          id: (Date.now() + 1).toString(),
+          content: "I had trouble understanding that. Could you try again?",
+          isAdvisor: true,
+        }]);
+      }
+    } catch (err) {
+      setMessages((prev) => [...prev, {
+        id: (Date.now() + 1).toString(),
+        content: "I'm having trouble connecting. Please try again.",
+        isAdvisor: true,
+      }]);
     }
-  }, [inputValue, currentStep]);
+
+    setIsLoading(false);
+    setIsSpeaking(false);
+    setAdvisorStatus("listening");
+  }, [inputValue, isLoading]);
 
   const handleMicToggle = useCallback(() => {
     setIsRecording((prev) => !prev);
@@ -80,19 +140,10 @@ export default function SessionPage() {
     setIsGenerating(true);
 
     try {
-      // Get the transcript file stored by upload-box
-      const storedFile = sessionStorage.getItem("uploadedFile");
       const transcriptData = sessionStorage.getItem("transcriptData");
       const answers = answersRef.current;
-      
-      // Build career goal from answers
-      const careerGoal = answers.length >= 3 
-        ? answers[2]  // "Are you more interested in..."
-        : answers.length > 0 
-          ? answers[answers.length - 1] 
-          : "";
+      const careerGoal = answers.length >= 3 ? answers[2] : answers[answers.length - 1] || "";
 
-      // Store career goal and answers for the plan page
       sessionStorage.setItem("careerGoal", careerGoal);
       sessionStorage.setItem("sessionAnswers", JSON.stringify({
         major: answers[0] || "",
@@ -100,19 +151,13 @@ export default function SessionPage() {
         interest: answers[2] || "",
       }));
 
-      // If we have transcript data, call the recommend endpoint
       if (transcriptData) {
         const transcript = JSON.parse(transcriptData);
-        
         const res = await fetch(`${API_BASE}/api/recommend/from-data`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            transcript,
-            career_goal: careerGoal,
-          }),
+          body: JSON.stringify({ transcript, career_goal: careerGoal }),
         });
-
         if (res.ok) {
           const plan = await res.json();
           sessionStorage.setItem("semesterPlan", JSON.stringify(plan));
@@ -121,17 +166,12 @@ export default function SessionPage() {
 
       router.push("/plan");
     } catch (err) {
-      console.error("Failed to generate plan:", err);
-      // Navigate anyway — plan page will show fallback data
       router.push("/plan");
     }
   }, [router]);
 
-  const isComplete = currentStep === 3 && messages.filter((m) => !m.isAdvisor).length >= 3;
-
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Main content with top padding for nav */}
       <div className="flex-1 flex flex-col pt-16">
         {/* Progress bar */}
         <div className="px-8 py-5 border-b border-violet/10">
@@ -142,12 +182,9 @@ export default function SessionPage() {
 
         {/* Split layout */}
         <div className="flex-1 flex flex-col lg:flex-row">
-          {/* Left Column - AI Avatar */}
           <div className="lg:w-1/2 p-8 lg:p-12 border-b lg:border-b-0 lg:border-r border-violet/10 flex items-center justify-center min-h-[300px] lg:min-h-0">
             <AIAvatar isSpeaking={isSpeaking} status={advisorStatus} />
           </div>
-
-          {/* Right Column - Conversation Feed */}
           <div className="lg:w-1/2 flex flex-col flex-1 min-h-[400px] lg:min-h-0">
             <ConversationFeed
               messages={messages}
@@ -160,15 +197,13 @@ export default function SessionPage() {
           </div>
         </div>
 
-        {/* Bottom CTA - always appears */}
+        {/* Bottom CTA */}
         <div className="p-8 border-t border-violet/10">
-          <button 
+          <button
             onClick={handleGeneratePlan}
             disabled={isGenerating}
             className={`w-full py-4 rounded-full bg-[#7B2FBE] text-foreground font-[var(--font-heading)] font-semibold text-lg transition-colors ${
-              isGenerating
-                ? "opacity-60 cursor-wait"
-                : "hover:bg-[#9B5DE5]"
+              isGenerating ? "opacity-60 cursor-wait" : "hover:bg-[#9B5DE5]"
             }`}
           >
             {isGenerating ? "Generating your plan..." : "Generate My Plan →"}
