@@ -32,6 +32,29 @@ export default function SessionPage() {
   const chatHistory = useRef<ChatHistoryItem[]>([]);
   const answersRef = useRef<string[]>([]);
   const messageCount = useRef(0);
+  const transcriptCtx = useRef<string | null>(null);
+
+  // Build transcript context from sessionStorage on mount
+  useEffect(() => {
+    const raw = sessionStorage.getItem("transcriptData");
+    if (raw) {
+      try {
+        const t = JSON.parse(raw);
+        const courseList = (t.completed_courses || [])
+          .filter((c: any) => c.grade !== "W")
+          .map((c: any) => `${c.course_code} (${c.course_name}, grade: ${c.grade}, ${c.semester})`)
+          .join("; ");
+        transcriptCtx.current = [
+          `Student Name: ${t.student_name}`,
+          `Student ID: ${t.student_id}`,
+          `Major: ${t.major}`,
+          `GPA: ${t.gpa}`,
+          `Total Credit Hours: ${t.total_credit_hours}`,
+          `Completed Courses: ${courseList}`,
+        ].join("\n");
+      } catch {}
+    }
+  }, []);
 
   // Start conversation with Gemini greeting on mount
   useEffect(() => {
@@ -96,6 +119,7 @@ export default function SessionPage() {
         body: JSON.stringify({
           message: userText,
           history: chatHistory.current,
+          transcript_context: transcriptCtx.current,
         }),
       });
 

@@ -44,7 +44,15 @@ Guidelines:
 - Never use markdown formatting (no **, ##, etc.) — your responses will be spoken aloud
 - Reference UTD-specific things when relevant (Comet Card, ECS building, etc.)
 - If you don't know something specific, say so honestly
-- Guide the conversation toward understanding what the student needs"""
+- Guide the conversation toward understanding what the student needs
+
+CRITICAL RULES ABOUT COURSE DATA:
+- You have access to the OFFICIAL UTD course catalog data including descriptions, prerequisites, and credit hours.
+- When courses are provided in the context, that data IS the official catalog. Use it directly.
+- ONLY reference course codes and titles from the data provided to you. NEVER guess or make up course codes.
+- NEVER tell students to "check the UTD catalog" or "visit the website" — YOU have the catalog data.
+- If a course has prerequisites listed, state them directly. You have this information.
+- If you don't have data for a specific course, say "I don't have that course in my records" rather than redirecting to the catalog."""
 
 
 async def generate_advisor_message(
@@ -220,6 +228,7 @@ def _fallback_message(
 async def chat_with_advisor(
     conversation_history: list[dict],
     user_message: str,
+    transcript_context: Optional[str] = None,
 ) -> str:
     """
     Multi-turn conversation with the AI academic advisor via Gemini.
@@ -227,12 +236,18 @@ async def chat_with_advisor(
     Args:
         conversation_history: Previous messages [{role: "user"|"model", content: "..."}]
         user_message: The new message from the student
+        transcript_context: Summary of the student's parsed transcript
 
     Returns:
         Advisor's response text
     """
     if not client:
         return "I'm not connected right now. Please make sure the Gemini API key is set up."
+
+    # Build system prompt with transcript context
+    system_prompt = CHAT_SYSTEM_PROMPT
+    if transcript_context:
+        system_prompt += f"\n\nSTUDENT TRANSCRIPT DATA (you have already reviewed this):\n{transcript_context}\n\nIMPORTANT: You have access to this student's transcript. Reference their specific courses, GPA, and progress when relevant. Do NOT say you don't have access to their transcript."
 
     # Convert history to Gemini Content format
     gemini_history = []
@@ -258,7 +273,7 @@ async def chat_with_advisor(
             client.models.generate_content,
             model=MODEL,
             contents=gemini_history,
-            config=types.GenerateContentConfig(system_instruction=CHAT_SYSTEM_PROMPT),
+            config=types.GenerateContentConfig(system_instruction=system_prompt),
         )
 
         assistant_response = response.text
