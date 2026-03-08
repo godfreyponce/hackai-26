@@ -143,16 +143,19 @@ export default function SessionPage() {
           whyText: r.reason,
         }));
 
-        const totalCredits = plan.total_credits || recCourses.length * 3;
-
-        setColumns(prev => ({
-          ...prev,
-          recommended: {
-            ...prev.recommended,
-            credits: totalCredits,
-            courses: recCourses,
-          }
-        }));
+        // Stagger courses onto the board one at a time (800ms apart)
+        recCourses.forEach((course, index) => {
+          setTimeout(() => {
+            setColumns(prev => ({
+              ...prev,
+              recommended: {
+                ...prev.recommended,
+                credits: (index + 1) * 3,
+                courses: [...prev.recommended.courses, course],
+              }
+            }));
+          }, index * 800);
+        });
       }
     } catch (err) {
       console.error("Failed to fetch recommendations:", err);
