@@ -84,9 +84,21 @@ def generate_recommendations(
         logger.info("No remaining required courses found. Suggesting tech electives.")
         available = _suggest_tech_electives(plan, completed_codes, store)
 
-    # Score each available course
+    # ─── STRICT FLOWCHART ORDER ───────────────────────────────────
+    # Only recommend courses from the NEXT semester in the flowchart.
+    # If semester 5 has 3 courses, recommend those 3 + fill remaining
+    # credits from semester 6 only if needed.
+    next_sem_courses = [c for c in available if c.get("semester_distance", 0) == 0]
+    fill_courses = [c for c in available if c.get("semester_distance", 0) == 1]
+
+    # If no next-semester courses, fall back to all available
+    if not next_sem_courses:
+        next_sem_courses = available
+        fill_courses = []
+
+    # Score next-semester courses
     recommendations = []
-    for item in available:
+    for item in next_sem_courses:
         code = item["code"]
         course_info = store.get_course(code)
 
@@ -101,7 +113,6 @@ def generate_recommendations(
             store=store,
         )
 
-        # Build the recommendation
         title = course_info.title if course_info else code
         reason = _generate_reason(code, item, course_info, career_goal)
 
@@ -113,11 +124,37 @@ def generate_recommendations(
             uncertainty_type=uncertainty,
         ))
 
-    # Sort by confidence (highest first)
+    # Sort by confidence within the same semester
     recommendations.sort(key=lambda r: r.confidence_score, reverse=True)
 
-    # Trim to fit target credit load
+    # Check if we need to fill credits from the next semester
     selected = _select_for_semester(recommendations, credits_per_semester, store)
+    current_credits = sum(
+        (store.get_course(r.course_code).credits if store.get_course(r.course_code) else 3)
+        for r in selected
+    )
+
+    # Fill remaining credits from next semester if under target
+    if current_credits < credits_per_semester and fill_courses:
+        fill_recs = []
+        for item in fill_courses:
+            code = item["code"]
+            course_info = store.get_course(code)
+            score, uncertainty = _score_course(
+                code=code, category=item["category"], priority=item["priority"],
+                course_info=course_info, career_goal=career_goal,
+                completed_codes=completed_codes, plan=plan, store=store,
+            )
+            title = course_info.title if course_info else code
+            reason = _generate_reason(code, item, course_info, career_goal)
+            fill_recs.append(CourseRecommendation(
+                course_code=code, course_name=title, reason=reason,
+                confidence_score=round(score, 3), uncertainty_type=uncertainty,
+            ))
+        fill_recs.sort(key=lambda r: r.confidence_score, reverse=True)
+        remaining_credits = credits_per_semester - current_credits
+        fill_selected = _select_for_semester(fill_recs, int(remaining_credits), store)
+        selected.extend(fill_selected)
 
     return selected
 
