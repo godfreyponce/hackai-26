@@ -69,7 +69,7 @@ export default function SessionPage() {
   const [sessionEnded, setSessionEnded] = useState(false);
   const [sessionStarted, setSessionStarted] = useState(false); // Gate for autoplay policy
   const [targetSemester, setTargetSemester] = useState("Fall 2026");
-  const [conciseMode, setConciseMode] = useState(true); // Default ON for voice
+
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
   const [planGenerated, setPlanGenerated] = useState(false);
   const [earlyGradMode, setEarlyGradMode] = useState(false);
@@ -756,7 +756,7 @@ export default function SessionPage() {
           message: userText,
           history: chatHistory.current,
           transcript_context: fullContext,
-          concise: conciseMode,
+          concise: true,
         }),
       });
 
@@ -831,7 +831,7 @@ export default function SessionPage() {
           message: moveMessage,
           history: chatHistory.current,
           transcript_context: fullContext,
-          concise: conciseMode,
+          concise: true,
         }),
       });
 
@@ -841,7 +841,7 @@ export default function SessionPage() {
         playAudio(data.reply);
       }
     } catch {}
-  }, [conciseMode, columns, expectedGradDate]);
+  }, [columns, expectedGradDate]);
 
   const handleMicToggle = useCallback(() => {
     if (isSpeaking) return; // Don't allow recording while AI is speaking
@@ -952,9 +952,17 @@ Be concise but thorough. Point out specific issues if any.`;
   }, [columns, expectedGradDate, displayMajor, isGettingFeedback, isLoading, extractMinorFromChat]);
 
   const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string, note?: string, prerequisite_chains?: Record<string, string[]>}) => {
-    const newColumns: Record<string, any> = {
-      inProgress: columns.inProgress, // preserve in-progress
-    };
+    const newColumns: Record<string, any> = {};
+
+    // Preserve all historical (past) semester columns
+    Object.entries(columns).forEach(([key, col]) => {
+      if (col.isHistorical) {
+        newColumns[key] = col;
+      }
+    });
+
+    // Preserve in-progress column
+    newColumns.inProgress = columns.inProgress;
 
     plan.semesters.forEach((sem: any) => {
       const key = sem.semester.replace(/\s+/g, "_");
@@ -1191,12 +1199,7 @@ Be concise but thorough. Point out specific issues if any.`;
                   </button>
                 )}
 
-                <button
-                  onClick={() => setConciseMode(p => !p)}
-                  className="ml-auto px-3 py-2 rounded-lg border border-white/10 text-xs text-muted-foreground hover:border-violet-400/40 transition-all"
-                >
-                  {conciseMode ? "⚡ Concise" : "💬 Detailed"}
-                </button>
+
               </div>
             </div>
           </div>
