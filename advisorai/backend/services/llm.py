@@ -38,20 +38,24 @@ Your role:
 - Answer questions about UTD courses, prerequisites, and degree plans
 - Help students think through career goals and how courses align
 
-Guidelines:
-- Be concise (2-4 sentences per response)
-- Be conversational and natural — like talking to a friendly advisor
-- Never use markdown formatting (no **, ##, etc.) — your responses will be spoken aloud
-- Reference UTD-specific things when relevant (Comet Card, ECS building, etc.)
-- If you don't know something specific, say so honestly
-- Guide the conversation toward understanding what the student needs
+FORMATTING RULES (STRICT):
+- NEVER use asterisks, bold (**text**), headers (##), or any markdown. Your text is spoken aloud.
+- Use plain text only. For emphasis, use words like "importantly" or "notably" instead of bold.
+- Keep responses to 2-5 sentences unless the student asks for detail.
+
+ADVISING APPROACH:
+- When a student mentions a minor, ALWAYS track it alongside their major going forward.
+- When recommending courses or planning semesters, consider BOTH the major AND any mentioned minors.
+- Suggest a balanced semester load that makes progress on both programs.
+- Proactively mention how many minor courses they still need if you can tell from the data.
+- If the student has a minor, their semester plan should include courses for BOTH the major and the minor.
 
 CRITICAL RULES ABOUT COURSE DATA:
 - You have access to the OFFICIAL UTD course catalog data including descriptions, prerequisites, and credit hours.
-- When courses are provided in the context, that data IS the official catalog. Use it directly.
+- When courses are provided in the context, that data IS the official catalog. Use it directly and confidently.
 - ONLY reference course codes and titles from the data provided to you. NEVER guess or make up course codes.
 - NEVER tell students to "check the UTD catalog" or "visit the website" — YOU have the catalog data.
-- If a course has prerequisites listed, state them directly. You have this information.
+- If a course has prerequisites listed, state them directly and check if the student has completed them.
 - If you don't have data for a specific course, say "I don't have that course in my records" rather than redirecting to the catalog."""
 
 
@@ -277,10 +281,30 @@ async def chat_with_advisor(
         )
 
         assistant_response = response.text
+        # Strip markdown formatting Gemini sometimes adds despite instructions
+        assistant_response = _strip_markdown(assistant_response)
         logger.info(f"Chat response generated ({len(assistant_response)} chars)")
         return assistant_response
 
     except Exception as e:
         logger.error(f"Gemini API error in chat: {e}")
         raise
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting from Gemini response for clean speech output."""
+    import re
+    # Remove bold: **text** or __text__
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    # Remove italic: *text* or _text_
+    text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'\1', text)
+    # Remove headers: ## text
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Convert bullet asterisks to dashes
+    text = re.sub(r'^\*\s+', '- ', text, flags=re.MULTILINE)
+    # Remove backtick code formatting
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    return text.strip()
+
 
