@@ -37,6 +37,12 @@ export function VoiceOrb({
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const chatHistory = useRef<HistoryMessage[]>([]);
   const isComponentMounted = useRef(true);
+  const transcriptCtxRef = useRef(transcriptContext);
+
+  // Sync transcript context so the closure always has the latest
+  useEffect(() => {
+    transcriptCtxRef.current = transcriptContext;
+  }, [transcriptContext]);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -110,7 +116,7 @@ export function VoiceOrb({
         }
       } catch (err) {
         if (isComponentMounted.current) {
-          const fallbackMsg = "Hey! I'm Comet Advisor. What courses are you thinking about?";
+          const fallbackMsg = "Hey! I'm Comet Advisor. How can I help you plan your courses?";
           setAiText(fallbackMsg);
           aiTextRef.current = fallbackMsg;
           playAudioResponse(fallbackMsg);
@@ -258,7 +264,8 @@ export function VoiceOrb({
   };
 
   const handleSendMessage = async (text: string, wasInterrupted: boolean) => {
-    if (!text.trim() || orbState === "THINKING") return;
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (!text.trim() || orbState !== "LISTENING") return;
 
     // Transition to thinking, pause mic
     if (recognitionRef.current) {
@@ -275,7 +282,7 @@ export function VoiceOrb({
         body: JSON.stringify({
           message: text,
           history: chatHistory.current,
-          transcript_context: transcriptContext,
+          transcript_context: transcriptCtxRef.current,
           concise: conciseMode,
           was_interrupted: wasInterrupted
         }),
