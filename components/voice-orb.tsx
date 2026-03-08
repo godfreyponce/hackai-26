@@ -31,6 +31,7 @@ export function VoiceOrb({
   const [interimTranscript, setInterimTranscript] = useState("");
   const [aiText, setAiText] = useState("");
   
+  const aiTextRef = useRef("");
   const recognitionRef = useRef<any>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -59,13 +60,30 @@ export function VoiceOrb({
           
           setInterimTranscript(latestTranscript);
 
-          // INTERRUPT LOGIC
-          // If we are currently speaking and we detect clear speech noise (>2 chars)
+          // INTERRUPT LOGIC & SELF-HEARING PREVENTION
           if (audioRef.current && !audioRef.current.paused) {
-            if (latestTranscript.trim().length > 2) {
-              stopAudioPlayback();
-              setOrbState("LISTENING");
+            const finalUserText = latestTranscript.trim().toLowerCase();
+            const currentAiText = aiTextRef.current.toLowerCase();
+            
+            // Strip punctuation and normalize spaces for robust matching
+            const stripPunc = (s: string) => s.replace(/[^\w\s\']|_/g, "").replace(/\s+/g, " ");
+            const cleanUser = stripPunc(finalUserText);
+            const cleanAi = stripPunc(currentAiText);
+
+            if (cleanUser.length < 4) {
+               // Too short to judge if it's an echo or interrupt, ignore for now
+               return; 
             }
+
+            if (cleanAi.includes(cleanUser)) {
+               // The mic is just hearing the laptop speakers (echoing the AI)
+               // Ignore this input completely so we don't interrupt ourselves
+               return;
+            }
+
+            // If we reach here, the text diverged from the AI transcript -> INTERRUPT!
+            stopAudioPlayback();
+            setOrbState("LISTENING");
           }
 
           // Reset silence timer
@@ -111,6 +129,7 @@ export function VoiceOrb({
           
           if (isComponentMounted.current) {
             setAiText(data.reply);
+            aiTextRef.current = data.reply;
             onAIResponse(data.reply);
             playAudioResponse(data.reply);
           }
@@ -119,6 +138,7 @@ export function VoiceOrb({
         if (isComponentMounted.current) {
           const fallbackMsg = "Hey! I'm Comet Advisor. What courses are you thinking about?";
           setAiText(fallbackMsg);
+          aiTextRef.current = fallbackMsg;
           playAudioResponse(fallbackMsg);
         }
       }
@@ -155,7 +175,13 @@ export function VoiceOrb({
         URL.revokeObjectURL(url);
         if (isComponentMounted.current) {
           setOrbState("LISTENING");
-          if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
+          // Flush the recognition buffer so the echoed text isn't sent as a new message
+          if (recognitionRef.current) { 
+             try { 
+               recognitionRef.current.abort(); 
+               setTimeout(() => recognitionRef.current.start(), 50);
+             } catch {} 
+          }
         }
       };
 
@@ -163,7 +189,12 @@ export function VoiceOrb({
         URL.revokeObjectURL(url);
         if (isComponentMounted.current) {
           setOrbState("LISTENING");
-          if (recognitionRef.current) { try { recognitionRef.current.start(); } catch {} }
+          if (recognitionRef.current) { 
+             try { 
+               recognitionRef.current.abort(); 
+               setTimeout(() => recognitionRef.current.start(), 50);
+             } catch {} 
+          }
         }
       };
 
@@ -282,6 +313,7 @@ export function VoiceOrb({
       
       const replyText = chatData.reply;
       setAiText(replyText);
+      aiTextRef.current = replyText;
       onAIResponse(replyText); // Notify parent to parse courses
 
       // Now fetch audio using our helper
