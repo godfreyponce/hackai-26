@@ -43,7 +43,7 @@ class CompletedCourse(BaseModel):
     course_code: str          # e.g. "CS 1337"
     course_name: str          # e.g. "Computer Science I"
     grade: str                # e.g. "A", "B+", "W", "CR"
-    credit_hours: float       # e.g. 3.0
+    credit_hours: float = 3.0  # e.g. 3.0 (optional, defaults to 3)
     semester: Optional[str] = None  # e.g. "2024 Fall"
 
 

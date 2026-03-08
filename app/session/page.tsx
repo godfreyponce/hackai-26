@@ -114,9 +114,49 @@ export default function SessionPage() {
 
         // Set previous semesters
         setPreviousSemesters(completedBySemester);
+
+        // Fetch semester-sequenced recommendations from our verified degree plan
+        fetchRecommendations(t);
       } catch {}
     }
   }, []);
+
+  // Call backend recommend engine (uses verified CS flowchart semester sequence)
+  const fetchRecommendations = async (transcript: any) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/recommend/from-data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(transcript),
+      });
+      if (!res.ok) return;
+      const plan = await res.json();
+      
+      if (plan.recommendations && plan.recommendations.length > 0) {
+        const recCourses: Course[] = plan.recommendations.map((r: any) => ({
+          id: r.course_code + "-rec-" + Math.random().toString(36).substr(2, 9),
+          code: r.course_code,
+          title: r.course_name,
+          professor: `Confidence: ${Math.round(r.confidence_score * 100)}%`,
+          badge: "Core Requirement" as const,
+          whyText: r.reason,
+        }));
+
+        const totalCredits = plan.total_credits || recCourses.length * 3;
+
+        setColumns(prev => ({
+          ...prev,
+          recommended: {
+            ...prev.recommended,
+            credits: totalCredits,
+            courses: recCourses,
+          }
+        }));
+      }
+    } catch (err) {
+      console.error("Failed to fetch recommendations:", err);
+    }
+  };
 
   // Update recommended column title when target semester changes
   useEffect(() => {
@@ -326,9 +366,6 @@ export default function SessionPage() {
       if (res.ok) {
         const data = await res.json();
         chatHistory.current = data.history;
-        
-        // Parse the advisor's text and update board
-        await extractAndAddCourses(data.reply);
 
         playAudio(data.reply, () => {
           if (!sessionEnded && messageCount.current < 4) {
