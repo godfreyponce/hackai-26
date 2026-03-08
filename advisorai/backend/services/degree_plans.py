@@ -329,6 +329,215 @@ SE_DEGREE_PLAN = {
 }
 
 
+# ─── Minor Plans ─────────────────────────────────────────────────
+
+FINANCE_MINOR = {
+    "name": "Finance",
+    "type": "minor",
+    "total_hours": 18,
+    "subject_prefixes": ["FIN", "ACCT"],
+    "required_courses": [
+        "ACCT 2301",  # Introductory Financial Accounting
+        "ACCT 2302",  # Managerial Accounting
+        "FIN 3320",   # Business Finance
+        "FIN 3330",   # Financial Statement Analysis
+        "FIN 3390",   # Corporate Finance
+        "FIN 4320",   # Investments
+    ],
+    "prerequisite_chains": {
+        "ACCT 2302": ["ACCT 2301"],
+        "FIN 3320": ["ACCT 2301"],
+        "FIN 3330": ["ACCT 2301", "FIN 3320"],
+        "FIN 3390": ["FIN 3320"],
+        "FIN 4320": ["FIN 3320"],
+    },
+    "notes": "Naveen Jindal School of Management. CS students may need advisor approval.",
+}
+
+BUSINESS_MINOR = {
+    "name": "Business",
+    "type": "minor",
+    "total_hours": 18,
+    "subject_prefixes": ["BA", "MKT", "FIN", "OPRE", "ACCT"],
+    "required_courses": [
+        "ACCT 2301",  # Introductory Financial Accounting
+        "BA 3301",    # Business Law
+        "BA 3341",    # Organizational Behavior
+        "MKT 3300",   # Principles of Marketing
+        "FIN 3100",   # Personal Finance
+        "OPRE 3310",  # Introduction to Operations Research
+    ],
+    "prerequisite_chains": {},
+    "notes": "Jindal School of Management minor.",
+}
+
+MATH_MINOR = {
+    "name": "Mathematics",
+    "type": "minor",
+    "total_hours": 18,
+    "subject_prefixes": ["MATH"],
+    "required_courses": [
+        "MATH 2413",  # Calculus I (or equivalent)
+        "MATH 2414",  # Calculus II
+        "MATH 2418",  # Linear Algebra
+        "MATH 3310",  # Theoretical Concepts of Calculus
+        "MATH 3311",  # Abstract Algebra I
+        "MATH 4334",  # Numerical Analysis
+    ],
+    "prerequisite_chains": {
+        "MATH 2414": ["MATH 2413"],
+        "MATH 2418": ["MATH 2413"],
+        "MATH 3310": ["MATH 2414"],
+        "MATH 3311": ["MATH 2414"],
+        "MATH 4334": ["MATH 3311"],
+    },
+    "notes": "Department of Mathematical Sciences.",
+}
+
+DATA_SCIENCE_MINOR = {
+    "name": "Data Science",
+    "type": "minor",
+    "total_hours": 15,
+    "subject_prefixes": ["STAT", "CS"],
+    "required_courses": [
+        "CS 3341",    # Probability and Statistics — can count for major too
+        "STAT 3355",  # Statistics for Life Sciences (alt: STAT 4382)
+        "CS 4375",    # Machine Learning
+        "STAT 4382",  # Applied Statistics
+        "CS 4395",    # Human Language Technologies (or other data-intensive CS elective)
+    ],
+    "prerequisite_chains": {
+        "CS 3341": ["MATH 2414", "CS 2305"],
+        "STAT 3355": ["MATH 2414"],
+        "CS 4375": ["CS 3354"],
+        "STAT 4382": ["STAT 3355"],
+    },
+    "notes": "Unofficial — verify current requirements at utdallas.edu",
+}
+
+PSYCHOLOGY_MINOR = {
+    "name": "Psychology",
+    "type": "minor",
+    "total_hours": 18,
+    "subject_prefixes": ["PSY"],
+    "required_courses": [
+        "PSY 2301",  # Introduction to Psychology
+        "PSY 2314",  # Lifespan Development
+        "PSY 3331",  # Abnormal Psychology
+        "PSY 3380",  # Cognitive Psychology
+        "PSY 4329",  # Research Methods in Psychology
+        "PSY 4342",  # Psychology Elective (upper div)
+    ],
+    "prerequisite_chains": {
+        "PSY 3331": ["PSY 2301"],
+        "PSY 3380": ["PSY 2301"],
+        "PSY 4329": ["PSY 2301"],
+        "PSY 4342": ["PSY 2301"],
+    },
+    "notes": "School of Behavioral and Brain Sciences.",
+}
+
+ECONOMICS_MINOR = {
+    "name": "Economics",
+    "type": "minor",
+    "total_hours": 18,
+    "subject_prefixes": ["ECON"],
+    "required_courses": [
+        "ECON 2301",  # Principles of Macroeconomics
+        "ECON 2302",  # Principles of Microeconomics
+        "ECON 3310",  # Intermediate Microeconomics
+        "ECON 3311",  # Intermediate Macroeconomics
+        "ECON 4320",  # Econometrics
+        "ECON 4350",  # Economics Elective (upper div)
+    ],
+    "prerequisite_chains": {
+        "ECON 3310": ["ECON 2302"],
+        "ECON 3311": ["ECON 2301"],
+        "ECON 4320": ["ECON 3310", "ECON 3311"],
+        "ECON 4350": ["ECON 3310"],
+    },
+    "notes": "School of Economic, Political and Policy Sciences.",
+}
+
+NEUROSCIENCE_MINOR = {
+    "name": "Neuroscience",
+    "type": "minor",
+    "total_hours": 19,
+    "subject_prefixes": ["COGS", "PSY", "BIOL"],
+    "required_courses": [
+        "COGS 2301",  # Intro to Cognitive Science
+        "PSY 2301",   # Intro to Psychology
+        "BIOL 2311",  # Intro to Modern Biology
+        "COGS 3301",  # Foundations of Cognitive Science
+        "COGS 4310",  # Computational Neuroscience
+        "PSY 3380",   # Cognitive Psychology
+    ],
+    "prerequisite_chains": {
+        "COGS 3301": ["COGS 2301"],
+        "COGS 4310": ["COGS 3301"],
+        "PSY 3380": ["PSY 2301"],
+    },
+    "notes": "School of Behavioral and Brain Sciences.",
+}
+
+MINOR_PLANS: dict[str, dict] = {
+    # Primary keys (normalized lowercase)
+    "finance": FINANCE_MINOR,
+    "business": BUSINESS_MINOR,
+    "mathematics": MATH_MINOR,
+    "math": MATH_MINOR,
+    "data science": DATA_SCIENCE_MINOR,
+    "data_science": DATA_SCIENCE_MINOR,
+    "datascience": DATA_SCIENCE_MINOR,
+    "psychology": PSYCHOLOGY_MINOR,
+    "psych": PSYCHOLOGY_MINOR,
+    "economics": ECONOMICS_MINOR,
+    "econ": ECONOMICS_MINOR,
+    "neuroscience": NEUROSCIENCE_MINOR,
+    "neuro": NEUROSCIENCE_MINOR,
+}
+
+
+def get_minor_plan(minor_name: str) -> dict | None:
+    """
+    Look up a minor plan by name. Case-insensitive, handles common abbreviations.
+    Returns None for unknown minors — caller should fall back to LLM judgment.
+    """
+    if not minor_name:
+        return None
+    normalized = minor_name.lower().strip()
+    # Exact match first
+    if normalized in MINOR_PLANS:
+        return MINOR_PLANS[normalized]
+    # Partial match
+    for key, plan in MINOR_PLANS.items():
+        if normalized in key or key in normalized:
+            return plan
+    return None
+
+
+def get_minor_subject_prefixes(minor_name: str) -> list[str]:
+    """Get the Nebula subject prefixes to search for a given minor."""
+    plan = get_minor_plan(minor_name)
+    if plan:
+        return plan.get("subject_prefixes", [])
+    # For unknown minors, guess from the name
+    common_prefixes = {
+        "accounting": ["ACCT"],
+        "communications": ["COMM"],
+        "history": ["HIST"],
+        "philosophy": ["PHIL"],
+        "sociology": ["SOC"],
+        "political": ["GOVT"],
+        "arts": ["ATCM", "ARTS"],
+    }
+    lower = minor_name.lower()
+    for keyword, prefixes in common_prefixes.items():
+        if keyword in lower:
+            return prefixes
+    return []
+
+
 # ─── Registry ─────────────────────────────────────────────────────
 
 DEGREE_PLANS = {

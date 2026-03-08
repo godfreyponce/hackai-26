@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { AIAvatar } from "@/components/ai-avatar";
-import { Download, Loader2, ChevronRight, ChevronDown } from "lucide-react";
+import { Download, Loader2 } from "lucide-react";
 import { DndBoard, Course } from "@/components/dnd-board";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -19,7 +19,7 @@ const GRAD_YEAR_REGEX = /(?:graduat\w*|finish|done|complete)\s+(?:by\s+)?(?:(fal
 const GRAD_SEMESTER_REGEX = /(?:graduat\w*|finish)\s+(?:by\s+)?((?:fall|spring|summer)\s+\d{4})/i;
 
 // Helper: generate semester labels from a start semester to a graduation semester
-function generateSemesterLabels(start: string, gradSemester: string): string[] {
+function generateSemesterLabels(start: string, gradSemester: string, includeSummer: boolean = false): string[] {
   const seasonOrder = ["Spring", "Summer", "Fall"];
   const labels: string[] = [];
 
@@ -36,11 +36,11 @@ function generateSemesterLabels(start: string, gradSemester: string): string[] {
   let idx = seasonOrder.indexOf(season);
   if (idx === -1) idx = 2; // default to Fall
 
-  // Generate semesters (skip Summer by default for standard plan)
+  // Generate semesters
   for (let i = 0; i < 20; i++) { // safety cap at 20
     const label = `${seasonOrder[idx]} ${year}`;
-    // Only include Fall and Spring (not Summer) for the skeleton
-    if (seasonOrder[idx] !== "Summer") {
+    // Include Summer only if includeSummer is true
+    if (seasonOrder[idx] !== "Summer" || includeSummer) {
       labels.push(label);
     }
 
@@ -67,7 +67,7 @@ export default function SessionPage() {
   const [advisorStatus, setAdvisorStatus] = useState<"listening" | "speaking" | "idle">("idle");
   const [isLoading, setIsLoading] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
-  const [showPrevious, setShowPrevious] = useState(false);
+  const [sessionStarted, setSessionStarted] = useState(false); // Gate for autoplay policy
   const [targetSemester, setTargetSemester] = useState("Fall 2026");
   const [conciseMode, setConciseMode] = useState(true); // Default ON for voice
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
@@ -78,9 +78,9 @@ export default function SessionPage() {
   const [displayCredits, setDisplayCredits] = useState(0);
   const [displayTotalRequired, setDisplayTotalRequired] = useState(124);
   const [displayMajor, setDisplayMajor] = useState("Computer Science");
-
-  // Previous semesters (expandable)
-  const [previousSemesters, setPreviousSemesters] = useState<Record<string, Course[]>>({});
+  const [displayMinor, setDisplayMinor] = useState<string | null>(null);
+  const [showRegenConfirm, setShowRegenConfirm] = useState(false);
+  const [regenReason, setRegenReason] = useState("");
 
   // Prerequisite map for DnD validation (course_code -> [prereq_codes])
   const [prereqMap, setPrereqMap] = useState<Record<string, string[]>>({});
@@ -111,6 +111,8 @@ export default function SessionPage() {
   const recognitionRef = useRef<any>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isPlayingRef = useRef(false); // Guard against audio self-interrupt
+  const boardScrollRef = useRef<HTMLDivElement | null>(null); // Scroll container for DnD board
+  const handleSendRef = useRef<(text: string) => void>(() => {}); // Always-current handleSend
 
   // Load transcript data into columns on mount
   useEffect(() => {
@@ -190,6 +192,7 @@ export default function SessionPage() {
             professor: `Grade: ${c.grade}`,
             badge: "Core Requirement",
             whyText: `${c.semester}`,
+            grade: c.grade,
           };
 
           if (c.grade === "IP" || c.grade === "CR") {
@@ -204,15 +207,55 @@ export default function SessionPage() {
         // Set in-progress column and generate empty semester skeleton
         const ipCredits = inProgressCourses.length * 3;
 
-        // Build initial columns with empty semesters until expected graduation
-        const initColumns: Record<string, any> = {
-          inProgress: {
-            title: "In Progress (Spring 2026)",
-            credits: ipCredits,
-            courses: inProgressCourses,
-            isCompleted: false,
-            isInProgress: true,
-          },
+        // Build initial columns: historical semesters first, then inProgress, then future
+        const initColumns: Record<string, any> = {};
+
+        // --- Historical semesters (chronological, read-only) ---
+        const historicalSeasonOrder: Record<string, number> = { "Spring": 0, "Summer": 1, "Fall": 2 };
+        const sortedHistoricalKeys = Object.keys(completedBySemester)
+          .filter(s => s !== "Unknown" && !s.includes("Transfer"))
+          .sort((a, b) => {
+            const [yearA, seasonA] = a.split(" ");
+            const [yearB, seasonB] = b.split(" ");
+            if (yearA !== yearB) return parseInt(yearA) - parseInt(yearB);
+            return (historicalSeasonOrder[seasonA] || 0) - (historicalSeasonOrder[seasonB] || 0);
+          });
+
+        // Add transfer credits as a special column if present
+        if (completedBySemester["Transfer"]) {
+          const transferKey = "hist_Transfer";
+          initColumns[transferKey] = {
+            title: "Transfer Credits",
+            credits: completedBySemester["Transfer"].length * 3,
+            courses: completedBySemester["Transfer"],
+            isCompleted: true,
+            isInProgress: false,
+            isHistorical: true,
+          };
+        }
+
+        for (const semKey of sortedHistoricalKeys) {
+          // Convert "2024 Fall" to "Fall 2024" for display
+          const parts = semKey.split(" ");
+          const displayTitle = parts.length === 2 ? `${parts[1]} ${parts[0]}` : semKey;
+          const columnKey = `hist_${semKey.replace(/\s+/g, "_")}`;
+          initColumns[columnKey] = {
+            title: displayTitle,
+            credits: completedBySemester[semKey].length * 3,
+            courses: completedBySemester[semKey],
+            isCompleted: true,
+            isInProgress: false,
+            isHistorical: true,
+          };
+        }
+
+        // --- In Progress column ---
+        initColumns["inProgress"] = {
+          title: "In Progress (Spring 2026)",
+          credits: ipCredits,
+          courses: inProgressCourses,
+          isCompleted: false,
+          isInProgress: true,
         };
 
         // Determine start semester for planning (next semester after current)
@@ -237,12 +280,28 @@ export default function SessionPage() {
         };
 
         setColumns(initColumns);
-
-        // Set previous semesters
-        setPreviousSemesters(completedBySemester);
       } catch {}
     }
   }, []);
+
+  // Auto-scroll the DnD board to the "In Progress" column on mount
+  useEffect(() => {
+    if (!boardScrollRef.current) return;
+    // Wait a tick for columns to render
+    const timer = setTimeout(() => {
+      const container = boardScrollRef.current;
+      if (!container) return;
+      const inProgressCol = container.querySelector('[data-column-id="inProgress"]');
+      if (inProgressCol) {
+        const containerRect = container.getBoundingClientRect();
+        const colRect = inProgressCol.getBoundingClientRect();
+        // Scroll so inProgress is ~100px from the left edge
+        const scrollTarget = container.scrollLeft + (colRect.left - containerRect.left) - 100;
+        container.scrollTo({ left: Math.max(0, scrollTarget), behavior: "smooth" });
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [Object.keys(columns).length]); // Re-run when columns change (e.g., transcript loaded)
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -262,14 +321,18 @@ export default function SessionPage() {
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
           silenceTimerRef.current = setTimeout(() => {
-            if (recognitionRef.current) recognitionRef.current.stop();
-            handleSend(latestTranscript);
+            if (recognitionRef.current) {
+              try { recognitionRef.current.stop(); } catch {}
+            }
+            // Use ref to always call the LATEST handleSend (avoids stale closure)
+            handleSendRef.current(latestTranscript);
           }, 1500);
         };
 
+        // Do NOT clear the silence timer in onspeechend — the timer calls handleSend
+        // Just let the 1500ms timer fire naturally after speech ends
         recognition.onspeechend = () => {
-           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-           recognition.stop();
+          // no-op: let the silence timer handle it
         };
 
         recognition.onend = () => {
@@ -332,16 +395,19 @@ export default function SessionPage() {
         URL.revokeObjectURL(url);
         isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("idle");
+        setAdvisorStatus("listening");
         if (onEnded) onEnded();
+        // Auto-start listening after advisor finishes speaking
+        setTimeout(() => startListening(), 300);
       };
 
       audio.onerror = () => {
         URL.revokeObjectURL(url);
         isPlayingRef.current = false;
         setIsSpeaking(false);
-        setAdvisorStatus("idle");
+        setAdvisorStatus("listening");
         if (onEnded) onEnded();
+        setTimeout(() => startListening(), 300);
       };
 
       await audio.play().catch(e => {
@@ -374,18 +440,21 @@ export default function SessionPage() {
     }
   };
 
-  // Start chat on mount
+  // Start chat on mount — autoplay is allowed because user interacted on the home/upload page
   useEffect(() => {
     const startChat = async () => {
+      setSessionStarted(true);
       try {
         const res = await fetch(`${API_BASE}/api/voice/start`, { method: "POST" });
         if (res.ok) {
           const data = await res.json();
           chatHistory.current = data.history;
           playAudio(data.reply);
+        } else {
+          playAudio("Hey! I'm Pam, your academic advisor. What courses are you thinking about?");
         }
       } catch (err) {
-        playAudio("Hey! I'm Comet Advisor. What courses are you thinking about?");
+        playAudio("Hey! I'm Pam, your academic advisor. What courses are you thinking about?");
       }
     };
     startChat();
@@ -452,6 +521,56 @@ export default function SessionPage() {
         return updated;
       });
     } catch {}
+  };
+
+  // Bulk fetch professor data for multiple courses in a single request
+  const fetchBulkProfessors = async (courseCodes: string[]) => {
+    if (courseCodes.length === 0) return;
+
+    // Helper to update columns with results (or fallback to TBD)
+    const updateColumnsWithResults = (results: Record<string, any>) => {
+      setColumns(prev => {
+        const updated: Record<string, any> = {};
+        for (const key of Object.keys(prev)) {
+          updated[key] = {
+            ...prev[key],
+            courses: prev[key].courses.map((c: any) => {
+              const profData = results[c.code];
+              if (profData && profData.professor) {
+                return {
+                  ...c,
+                  professor: profData.display || profData.professor,
+                  aRate: profData.a_rate,
+                };
+              } else if (c.professor === "Loading...") {
+                return { ...c, professor: "TBD" };
+              }
+              return c;
+            }),
+          };
+        }
+        return updated;
+      });
+    };
+
+    try {
+      const res = await fetch(`${API_BASE}/api/courses/bulk-professors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ course_codes: courseCodes }),
+      });
+      if (!res.ok) {
+        // On error, still update Loading... to TBD
+        updateColumnsWithResults({});
+        return;
+      }
+      const data = await res.json();
+      const results = data.results || {};
+      updateColumnsWithResults(results);
+    } catch {
+      // On network error, update Loading... to TBD
+      updateColumnsWithResults({});
+    }
   };
 
   // Execute structured board actions returned by the AI (ADD, REMOVE, MOVE)
@@ -644,13 +763,25 @@ export default function SessionPage() {
       if (res.ok) {
         const data = await res.json();
         chatHistory.current = data.history;
-        
+
         // Execute structured board actions from AI (ADD, REMOVE, MOVE)
         if (data.board_actions && data.board_actions.length > 0) {
           executeBoardActions(data.board_actions);
         } else {
           // Fallback: parse course codes from text for backward compat
           await extractAndAddCourses(data.reply);
+        }
+
+        // Check for SUGGEST_REGENERATE action from backend
+        if (data.suggest_regenerate) {
+          setRegenReason(data.suggest_regenerate_reason || "Your goals have changed");
+          setShowRegenConfirm(true);
+        }
+
+        // Detect and persist minor from conversation
+        const detectedMinor = extractMinorFromChat();
+        if (detectedMinor && detectedMinor !== displayMinor) {
+          setDisplayMinor(detectedMinor);
         }
 
         playAudio(data.reply);
@@ -668,6 +799,9 @@ export default function SessionPage() {
 
     setIsLoading(false);
   };
+
+  // Keep the ref always pointing to the latest handleSend (fixes stale closure in SpeechRecognition useEffect)
+  handleSendRef.current = handleSend;
 
   // Called when user drags a course between semesters on the DnD board
   const handleCourseMove = useCallback(async (courseCode: string, fromSemester: string, toSemester: string) => {
@@ -732,6 +866,91 @@ export default function SessionPage() {
     document.body.removeChild(a);
   }, [columns]);
 
+  // State for feedback loading
+  const [isGettingFeedback, setIsGettingFeedback] = useState(false);
+
+  // Extract minor from chat history (defined here so it can be used by both handleGetFeedback and handleGeneratePlan)
+  const extractMinorFromChat = useCallback(() => {
+    const history = chatHistory.current;
+    if (!history || history.length === 0) return null;
+    const combinedText = history.map((m: any) => m.content || "").join(" ").toLowerCase();
+    const minorPatterns = [
+      /(?:want|pursuing|doing|have|taking|declared?|interested in)\s+(?:a\s+)?(\w+)\s+minor/i,
+      /(\w+)\s+minor/i,
+      /minor\s+in\s+(\w+)/i,
+    ];
+    for (const pattern of minorPatterns) {
+      const match = combinedText.match(pattern);
+      if (match) {
+        const m = match[1].trim();
+        if (!["a", "the", "my", "your", "this", "that"].includes(m.toLowerCase())) {
+          return m.charAt(0).toUpperCase() + m.slice(1);
+        }
+      }
+    }
+    return null;
+  }, []);
+
+  // Get comprehensive feedback on the current board state
+  const handleGetFeedback = useCallback(async () => {
+    if (!transcriptCtx.current || isGettingFeedback || isLoading) return;
+    setIsGettingFeedback(true);
+
+    // Build detailed board state
+    const boardSummary = Object.entries(columns)
+      .filter(([key]) => key !== "graduation")
+      .map(([, col]) => {
+        const courseCodes = (col.courses || []).map((c: any) => c.code).join(", ");
+        return `${col.title}: ${courseCodes || "(empty)"} [${col.credits || 0} credits]`;
+      }).join("\n");
+
+    const feedbackRequest = `Please review my ENTIRE current degree plan and give me comprehensive feedback.
+
+CURRENT BOARD STATE:
+${boardSummary}
+
+Please evaluate:
+1. Are there any prerequisite violations? (courses placed before their prereqs)
+2. Are any semesters overloaded (>18 credits) or too light (<12 credits)?
+3. Does the overall timeline make sense for graduation by ${expectedGradDate || "my expected date"}?
+4. Any difficult courses bunched together that might hurt my GPA?
+5. Am I making good progress toward my ${displayMajor} degree?
+${extractMinorFromChat() ? `6. Am I on track for my ${extractMinorFromChat()} minor?` : ""}
+
+Be concise but thorough. Point out specific issues if any.`;
+
+    const fullContext = [
+      transcriptCtx.current || "",
+      `\nCURRENT BOARD STATE:\n${boardSummary}`,
+      expectedGradDate ? `\nTarget Graduation: ${expectedGradDate}` : "",
+    ].join("");
+
+    try {
+      const res = await fetch(`${API_BASE}/api/voice/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: feedbackRequest,
+          history: chatHistory.current,
+          transcript_context: fullContext,
+          concise: false, // Want detailed feedback here
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        chatHistory.current = data.history;
+        playAudio(data.reply);
+      } else {
+        playAudio("I had trouble generating feedback. Please try again.");
+      }
+    } catch {
+      playAudio("Couldn't connect to get feedback. Please try again.");
+    }
+
+    setIsGettingFeedback(false);
+  }, [columns, expectedGradDate, displayMajor, isGettingFeedback, isLoading, extractMinorFromChat]);
+
   const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string, note?: string, prerequisite_chains?: Record<string, string[]>}) => {
     const newColumns: Record<string, any> = {
       inProgress: columns.inProgress, // preserve in-progress
@@ -780,15 +999,10 @@ export default function SessionPage() {
       setExpectedGradDate(plan.graduation_semester);
     }
 
-    // Fetch professor data for every planned course in background (batched, 5 at a time)
-    const allCourses = plan.semesters.flatMap((s: any) => s.courses || []);
-    const batchSize = 5;
-    (async () => {
-      for (let i = 0; i < allCourses.length; i += batchSize) {
-        const batch = allCourses.slice(i, i + batchSize);
-        await Promise.allSettled(batch.map((c: any) => fetchAndEnrichCourse(c.code)));
-      }
-    })();
+    // Fetch professor data for every planned course using bulk endpoint (single request)
+    const allCourseCodes = plan.semesters.flatMap((s: any) => (s.courses || []).map((c: any) => c.code));
+    // Single bulk request is much faster than individual parallel calls
+    fetchBulkProfessors(allCourseCodes);
   };
 
   const handleGeneratePlan = async () => {
@@ -801,6 +1015,9 @@ export default function SessionPage() {
       // Determine the next semester to start planning from
       // Use the target semester from conversation, or compute from current date
       const planStartSemester = targetSemester;
+
+      // Use persisted minor or extract from conversation history
+      const detectedMinor = displayMinor || extractMinorFromChat();
 
       const res = await fetch(`${API_BASE}/api/recommend/full-plan`, {
         method: "POST",
@@ -815,6 +1032,8 @@ export default function SessionPage() {
           major: transcriptMajor.current,
           completed_courses: transcriptCompletedCodes.current,
           accelerate: earlyGradMode,
+          conversation_history: chatHistory.current,
+          minor: detectedMinor,
         }),
       });
 
@@ -842,13 +1061,42 @@ export default function SessionPage() {
     setIsGeneratingPlan(false);
   };
 
-  const semesterKeys = Object.keys(previousSemesters).sort();
-  const totalCompletedCredits = semesterKeys.reduce(
-    (sum, key) => sum + previousSemesters[key].length * 3, 0
-  );
+  // Handle confirm regeneration
+  const handleConfirmRegenerate = useCallback(() => {
+    setShowRegenConfirm(false);
+    handleGeneratePlan();
+  }, []);
 
   return (
     <div className="min-h-screen bg-background flex flex-col pt-24 pb-12 px-8">
+      {/* Regeneration Confirmation Modal */}
+      {showRegenConfirm && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="bg-[#1a1a3a] border border-violet-500/30 rounded-2xl p-6 max-w-md mx-4 shadow-[0_0_40px_rgba(139,92,246,0.2)] animate-in fade-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-semibold text-foreground mb-2" style={{ fontFamily: "'Figtree', sans-serif" }}>
+              Update Your Plan?
+            </h3>
+            <p className="text-muted-foreground text-sm mb-4">
+              {regenReason}. Would you like me to generate an updated degree plan?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleConfirmRegenerate}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-semibold text-sm transition-all"
+              >
+                Yes, Update Plan
+              </button>
+              <button
+                onClick={() => setShowRegenConfirm(false)}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-white/10 text-muted-foreground hover:bg-white/5 font-semibold text-sm transition-all"
+              >
+                Not Now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-7xl mx-auto w-full flex flex-col items-center">
 
         {/* Top Center: Voice Avatar */}
@@ -862,7 +1110,7 @@ export default function SessionPage() {
              </div>
            )}
 
-           {/* Manual Mic Start/Stop Button — always visible when not loading/speaking */}
+           {/* Manual Mic Start/Stop Button */}
            {!isLoading && !isSpeaking && (
              <button 
                onClick={handleMicToggle}
@@ -907,6 +1155,12 @@ export default function SessionPage() {
                     <span className="text-base">💻</span>
                     <span>{displayMajor}</span>
                   </div>
+                  {displayMinor && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-base">📖</span>
+                      <span className="text-violet-400">{displayMinor} Minor</span>
+                    </div>
+                  )}
                 </div>
               </div>
               
@@ -922,17 +1176,20 @@ export default function SessionPage() {
                     <>🎓 Generate Full Plan</>
                   )}
                 </button>
-                
-                <button
-                  onClick={() => setEarlyGradMode(p => !p)}
-                  className={`px-5 py-3 rounded-xl border text-sm font-semibold flex items-center gap-2 transition-all ${
-                    earlyGradMode 
-                      ? "border-amber-500/50 bg-amber-500/10 text-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.15)]" 
-                      : "border-white/10 text-muted-foreground hover:border-violet-400/30"
-                  }`}
-                >
-                  {earlyGradMode ? "⚡ Early Graduation ON" : "⚡ Graduate Early"}
-                </button>
+
+                {planGenerated && (
+                  <button
+                    onClick={handleGetFeedback}
+                    disabled={isGettingFeedback || isLoading}
+                    className="px-5 py-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 text-cyan-400 text-sm font-semibold flex items-center gap-2 hover:bg-cyan-500/20 hover:border-cyan-500/50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  >
+                    {isGettingFeedback ? (
+                      <><Loader2 className="w-4 h-4 animate-spin" /> Reviewing...</>
+                    ) : (
+                      <>💬 Get Feedback</>
+                    )}
+                  </button>
+                )}
 
                 <button
                   onClick={() => setConciseMode(p => !p)}
@@ -945,57 +1202,6 @@ export default function SessionPage() {
           </div>
         )}
 
-        {/* Expandable Previous Semesters */}
-        {semesterKeys.length > 0 && (
-          <div className="w-full mb-6">
-            <button
-              onClick={() => setShowPrevious(!showPrevious)}
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors mb-4"
-            >
-              {showPrevious ? (
-                <ChevronDown className="w-4 h-4" />
-              ) : (
-                <ChevronRight className="w-4 h-4" />
-              )}
-              <span className="font-[var(--font-heading)] font-semibold text-sm" style={{ fontFamily: "'Figtree', sans-serif" }}>
-                Previous Semesters ({totalCompletedCredits} credits completed)
-              </span>
-            </button>
-
-            {showPrevious && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-8 animate-in slide-in-from-top-2 duration-300">
-                {semesterKeys.map((sem) => (
-                  <div
-                    key={sem}
-                    className="bg-[#141428]/40 border border-green-500/20 rounded-xl p-4"
-                  >
-                    <h3
-                      className="font-[var(--font-heading)] font-bold text-sm text-green-400 mb-3"
-                      style={{ fontFamily: "'Figtree', sans-serif" }}
-                    >
-                      {sem}
-                    </h3>
-                    <div className="flex flex-col gap-2">
-                      {previousSemesters[sem].map((course) => (
-                        <div
-                          key={course.id}
-                          className="flex items-center justify-between px-3 py-2 bg-green-500/5 rounded-lg border border-green-500/10"
-                        >
-                          <div className="flex flex-col">
-                            <span className="text-xs font-semibold text-green-400">{course.code}</span>
-                            <span className="text-[11px] text-muted-foreground truncate max-w-[160px]">{course.title}</span>
-                          </div>
-                          <span className="text-[10px] text-green-500/70">{course.professor.replace("Grade: ", "")}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Below Avatar: Drag and Drop Interactive Board */}
         <div className="w-full">
            <DndBoard
@@ -1004,6 +1210,7 @@ export default function SessionPage() {
              prereqMap={prereqMap}
              completedCourses={transcriptCompletedCodes.current}
              onCourseMove={handleCourseMove}
+             scrollContainerRef={boardScrollRef}
            />
         </div>
 

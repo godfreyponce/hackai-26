@@ -507,3 +507,59 @@ async def get_sections_for_course(course_id: str) -> list[NebulaSection]:
         return []
 
     return _parse_sections(raw_sections, [])
+
+
+async def fetch_courses_by_subject(subject_prefix: str) -> list[dict]:
+    """
+    Fetch all courses for a subject prefix from Nebula API.
+    Used to discover minor courses that aren't in hardcoded plans.
+
+    Args:
+        subject_prefix: Subject prefix (e.g., "FIN", "ACCT", "ECON")
+
+    Returns:
+        List of course dicts with code, title, credits, description
+    """
+    courses = []
+    offset = 0
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        while True:
+            try:
+                resp = await client.get(
+                    f"{BASE_URL}/course",
+                    params={"subject_prefix": subject_prefix.upper(), "offset": offset},
+                    headers=_headers(),
+                )
+                if resp.status_code != 200:
+                    break
+
+                data = resp.json()
+                batch = data.get("data", [])
+                if not batch:
+                    break
+
+                for c in batch:
+                    prefix = c.get("subject_prefix", "")
+                    number = c.get("course_number", "")
+                    code = f"{prefix} {number}".strip()
+                    if not code:
+                        continue
+
+                    courses.append({
+                        "code": code,
+                        "title": c.get("title", code),
+                        "credits": _parse_credits(c.get("credit_hours", "3")),
+                        "description": c.get("description", "")[:200],
+                    })
+
+                if len(batch) < 20:
+                    break
+                offset += len(batch)
+
+            except httpx.HTTPError as e:
+                logger.debug(f"Nebula /course for {subject_prefix} failed: {e}")
+                break
+
+    logger.debug(f"Fetched {len(courses)} courses for subject {subject_prefix}")
+    return courses

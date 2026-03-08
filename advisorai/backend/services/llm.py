@@ -17,6 +17,11 @@ from google import genai
 from google.genai import types
 
 from models.schemas import CourseRecommendation, TranscriptData
+from services.degree_plans import (
+    get_minor_plan,
+    get_minor_subject_prefixes,
+    CS_DEGREE_PLAN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,13 @@ FORMATTING RULES (STRICT):
 - Keep responses to 1-2 sentences MAXIMUM. Speak like a text message, not an email.
 - Do not repeat what the student just said. Never start with "Great question!", "Sure!", or "Of course!".
 - Get straight to the point. No filler phrases. No pleasantries.
+
+BOARD STATE IS THE SOURCE OF TRUTH (CRITICAL):
+- The student's CURRENT BOARD STATE shows EXACTLY what courses are in each semester column.
+- When asked about semester credit loads, USE THE EXACT CREDITS FROM THE BOARD STATE.
+- Do NOT assume 15 credits per semester. Read the actual board credits.
+- Example: If the board shows "Fall 2026: CS 3345, CS 4375, MATH 2418, PHYS 2326, CS 3377, GOVT 2305 [18 credits]", say 18 credits, NOT 15.
+- When a course is added/removed/moved, recalculate credits from the board, not from assumptions.
 
 ADVISING APPROACH:
 - When a student mentions a minor, ALWAYS track it alongside their major going forward.
@@ -127,7 +139,27 @@ RULES for actions:
 - Include action tags ONLY when the student explicitly asks to change the plan (add, remove, move, swap, replace, drop)
 - Do NOT include action tags for general questions or recommendations
 - If a prereq hasn't been met, WARN the student but still include the action if they insist
-- You can include multiple action tags in one response (e.g. for swaps)"""
+- You can include multiple action tags in one response (e.g. for swaps)
+
+PLAN REGENERATION (CRITICAL — use when student's goals change significantly):
+When the student declares a MINOR, changes their graduation goal significantly, or asks to redesign their plan, use:
+  [ACTION:SUGGEST_REGENERATE|reason]
+
+Examples:
+  Student: "I want to add a Finance minor"
+  You: "A Finance minor is a great complement to CS! It adds about 18 credit hours including courses like FIN 3320 and ACCT 2301. I'll keep track of this going forward.
+  [ACTION:SUGGEST_REGENERATE|You declared a Finance minor]"
+
+  Student: "Actually I want to switch my minor from Finance to Psychology"
+  You: "No problem! Switching to a Psychology minor. This includes courses like PSY 2301 and PSY 3380.
+  [ACTION:SUGGEST_REGENERATE|You changed your minor to Psychology]"
+
+  Student: "I need to graduate a year earlier"
+  You: "That's ambitious! Let me recalculate your timeline.
+  [ACTION:SUGGEST_REGENERATE|You requested early graduation]"
+
+ONLY use SUGGEST_REGENERATE for major goal changes (new minor, changed minor, major graduation timeline change).
+Do NOT use it for small questions, single course changes, or general advice."""
 
 
 async def generate_advisor_message(
@@ -342,6 +374,21 @@ async def chat_with_advisor(
         if gpa_match:
             gpa_val = float(gpa_match.group(1))
             system_prompt += build_gpa_guidance(gpa_val)
+
+        # Detect minor from context and inject formal minor data
+        minor_match = _re.search(r"(?:minor|pursuing|declared)\s*(?:in|:)?\s*(\w+(?:\s+\w+)?)\s*minor", transcript_context, _re.IGNORECASE)
+        if minor_match:
+            detected_minor = minor_match.group(1).strip()
+            minor_plan = get_minor_plan(detected_minor)
+            if minor_plan:
+                required = minor_plan.get("required_courses", [])
+                prereqs = minor_plan.get("prerequisite_chains", {})
+                system_prompt += f"""
+
+{detected_minor.upper()} MINOR DATA (from official UTD requirements):
+Required courses: {', '.join(required)}
+Prerequisites: {', '.join(f'{c} requires {", ".join(ps)}' for c, ps in prereqs.items()) if prereqs else 'None'}
+Use this when advising about the {detected_minor} minor."""
 
     # Convert history to Gemini Content format
     gemini_history = []
@@ -633,6 +680,49 @@ def _redistribute_semesters(
     return new_semesters if new_semesters else semesters
 
 
+def _extract_minor_from_conversation(history: list[dict]) -> Optional[str]:
+    """Extract minor declaration from conversation history."""
+    if not history:
+        return None
+    import re
+    minor_patterns = [
+        r"(?:want|pursuing|doing|have|taking|declared?|interested in)\s+(?:a\s+)?(\w+)\s+minor",
+        r"(\w+)\s+minor",
+        r"minor\s+in\s+(\w+)",
+    ]
+    combined_text = " ".join(msg.get("content", "") for msg in history).lower()
+    for pattern in minor_patterns:
+        match = re.search(pattern, combined_text, re.IGNORECASE)
+        if match:
+            minor = match.group(1).strip().title()
+            # Filter out common false positives
+            if minor.lower() not in ["a", "the", "my", "your", "this", "that"]:
+                return minor
+    return None
+
+
+def _extract_preferences_from_conversation(history: list[dict]) -> dict:
+    """Extract career goals, preferences, and constraints from conversation."""
+    if not history:
+        return {}
+    prefs = {}
+    combined_text = " ".join(msg.get("content", "") for msg in history).lower()
+
+    # Career goal patterns
+    career_patterns = [
+        r"(?:want to|interested in|career in|work in|become)\s+([\w\s]+?)(?:engineer|developer|scientist|analyst|researcher)",
+        r"(?:interested in|passionate about|want to learn)\s+([\w\s]+)",
+    ]
+    for pattern in career_patterns:
+        import re
+        match = re.search(pattern, combined_text)
+        if match:
+            prefs["career_interest"] = match.group(1).strip()
+            break
+
+    return prefs
+
+
 async def generate_full_plan(
     transcript_context: str,
     career_goal: Optional[str],
@@ -644,6 +734,8 @@ async def generate_full_plan(
     major: Optional[str] = None,
     completed_courses: Optional[list[str]] = None,
     accelerate: bool = False,
+    conversation_history: Optional[list[dict]] = None,
+    minor: Optional[str] = None,
 ) -> dict:
     """
     Generate a complete multi-semester academic plan using Gemini.
@@ -659,6 +751,8 @@ async def generate_full_plan(
         major: Student's major for degree plan lookup
         completed_courses: List of completed course codes
         accelerate: Whether to attempt early graduation
+        conversation_history: Chat history to extract preferences from
+        minor: Explicitly stated minor
 
     Returns:
         dict with 'semesters' list and 'graduation_semester'
@@ -668,11 +762,20 @@ async def generate_full_plan(
 
     import math
     from services.degree_plans import (
-        get_degree_plan, get_remaining_courses, get_all_required_courses,
+        get_degree_plan, get_remaining_courses,
     )
 
+    # Extract minor from conversation if not explicitly provided
+    if not minor and conversation_history:
+        minor = _extract_minor_from_conversation(conversation_history)
+
+    # Extract other preferences from conversation
+    conv_prefs = _extract_preferences_from_conversation(conversation_history or [])
+    if not career_goal and conv_prefs.get("career_interest"):
+        career_goal = conv_prefs["career_interest"]
+
     # Look up degree plan
-    plan = get_degree_plan(major or "Computer Science")
+    plan = get_degree_plan(major or "Computer Science") or CS_DEGREE_PLAN
     TOTAL_DEGREE_HOURS = plan.get("total_hours", 124)
     AVG_HOURS_PER_SEMESTER = 15
     MAX_FALL_SPRING_HOURS = 18
@@ -749,12 +852,73 @@ async def generate_full_plan(
 
     gpa_note = build_gpa_guidance(gpa)
 
+    # Build minor info if present — use formal registry first, then Nebula, then fallback
+    minor_note = ""
+    minor_prereqs_text = ""
+    if minor:
+        minor_plan = get_minor_plan(minor)
+        if minor_plan:
+            # Formal minor plan found
+            required = minor_plan.get("required_courses", [])
+            prereqs = minor_plan.get("prerequisite_chains", {})
+            notes = minor_plan.get("notes", "")
+            total_hours = minor_plan.get("total_hours", 18)
+
+            # Filter out completed minor courses
+            completed_set = set(completed_courses or [])
+            remaining_minor = [c for c in required if c not in completed_set]
+
+            if prereqs:
+                prereq_lines = [f"  {c}: requires {', '.join(ps)}" for c, ps in prereqs.items()]
+                minor_prereqs_text = "\n".join(prereq_lines)
+
+            minor_note = f"""
+
+MINOR REQUIREMENT (CRITICAL — FROM OFFICIAL {minor.upper()} MINOR PLAN):
+The student is pursuing a {minor} minor ({total_hours} credit hours).
+
+REQUIRED {minor.upper()} MINOR COURSES (schedule ALL of these that aren't completed):
+{', '.join(remaining_minor) if remaining_minor else '(all completed!)'}
+
+{f"MINOR PREREQUISITE CHAINS:{chr(10)}{minor_prereqs_text}" if minor_prereqs_text else ""}
+
+MINOR SCHEDULING RULES:
+- Spread {minor} courses across semesters (don't bunch at the end).
+- Mark each minor course's reason as "{minor} minor requirement".
+- Respect minor prereqs: {', '.join(f'{c} requires {", ".join(ps)}' for c, ps in prereqs.items()) if prereqs else 'No prereqs.'}
+{f"Note: {notes}" if notes else ""}
+"""
+        else:
+            # Try Nebula lookup for unknown minor
+            prefixes = get_minor_subject_prefixes(minor)
+            if prefixes:
+                minor_note = f"""
+
+MINOR REQUIREMENT ({minor.upper()} — DYNAMIC LOOKUP):
+The student is pursuing a {minor} minor.
+- Search for courses with these subject prefixes: {', '.join(prefixes)}
+- Include 6 courses (18 credit hours) from these subjects.
+- Spread them across semesters. Mark reason as "{minor} minor requirement".
+"""
+            else:
+                # Pure LLM fallback for unknown minors
+                minor_note = f"""
+
+MINOR REQUIREMENT ({minor.upper()} — USE YOUR KNOWLEDGE):
+The student is pursuing a {minor} minor.
+- Use your knowledge of UTD's {minor} minor requirements.
+- Include approximately 6 courses (18 credit hours) for this minor.
+- Spread them across semesters. Mark reason as "{minor} minor requirement".
+- If unsure of exact courses, use common lower-division + upper-division courses for {minor}.
+"""
+
     prompt = f"""You are CometAdvisor, an AI-powered academic advisor generating a COMPLETE multi-semester degree plan for a UTD student from NOW until GRADUATION.
 
 STUDENT DATA (from parsed transcript):
 {transcript_context}
 
 Career goal: {career_goal or "General ECS degree"}
+{f"MINOR: {minor} (include courses for this minor!)" if minor else ""}
 Starting semester: {current_semester}
 {f"Student started college: {start_semester}" if start_semester else ""}
 {f"Expected graduation: {target_graduation}" if target_graduation else ""}
@@ -763,6 +927,7 @@ Remaining hours to graduate ({TOTAL_DEGREE_HOURS} total required): {remaining_ho
 Estimated semesters remaining: {semesters_remaining}
 {gpa_note}
 {early_grad_note}
+{minor_note}
 
 SEMESTERS TO PLAN (you MUST generate EXACTLY these semesters — one JSON object per semester):
 {", ".join(semester_labels[:semesters_remaining + 1])}

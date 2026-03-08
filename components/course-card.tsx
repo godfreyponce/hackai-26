@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { User, CheckCircle } from "lucide-react";
 
 interface CourseCardProps {
@@ -12,6 +13,7 @@ interface CourseCardProps {
   isCompleted?: boolean;
   delay?: number;
   aRate?: number; // A-rate percentage (0-100)
+  grade?: string; // Letter grade for completed courses
 }
 
 export function CourseCard({
@@ -23,16 +25,37 @@ export function CourseCard({
   isCompleted = false,
   delay = 0,
   aRate,
+  grade,
 }: CourseCardProps) {
   const [showTooltip, setShowTooltip] = useState(false);
+  const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0, width: 0 });
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const handleMouseEnter = () => {
+    if (cardRef.current) {
+      const rect = cardRef.current.getBoundingClientRect();
+      setTooltipPos({
+        top: rect.bottom + window.scrollY + 8,
+        left: rect.left + window.scrollX,
+        width: rect.width,
+      });
+    }
+    setShowTooltip(true);
+  };
 
   return (
     <div
+      ref={cardRef}
       className={`relative group animate-fade-in-up ${
         isCompleted ? "opacity-70" : ""
       }`}
       style={{ animationDelay: `${delay}ms` }}
-      onMouseEnter={() => setShowTooltip(true)}
+      onMouseEnter={handleMouseEnter}
       onMouseLeave={() => setShowTooltip(false)}
     >
       <div
@@ -47,13 +70,23 @@ export function CourseCard({
           </div>
         )}
 
-        {/* Course code */}
-        <p className="font-[var(--font-heading)] font-semibold text-teal text-sm">
-          {code}
-        </p>
+        {/* Course code + grade badge */}
+        <div className="flex items-center justify-between">
+          <p className="font-[var(--font-heading)] font-semibold text-teal text-sm">
+            {code}
+          </p>
+          {grade && (
+            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+              ['A+','A','A-'].includes(grade) ? 'bg-green-500/20 text-green-400' :
+              ['B+','B','B-'].includes(grade) ? 'bg-blue-500/20 text-blue-400' :
+              ['C+','C','C-'].includes(grade) ? 'bg-yellow-500/20 text-yellow-400' :
+              'bg-red-500/20 text-red-400'
+            }`}>{grade}</span>
+          )}
+        </div>
 
         {/* Course title */}
-        <h3 
+        <h3
           className="font-[var(--font-heading)] font-semibold text-foreground mt-1 text-base leading-tight"
           style={{ fontFamily: "'Figtree', sans-serif" }}
         >
@@ -87,16 +120,24 @@ export function CourseCard({
         </div>
       </div>
 
-      {/* Tooltip */}
-      {showTooltip && !isCompleted && (
-        <div className="absolute left-0 right-0 -bottom-2 translate-y-full z-20 px-1">
-          <div className="bg-[#1a1a3a]/95 backdrop-blur-xl border border-violet/20 rounded-md p-4 shadow-[0_0_30px_rgba(123,47,190,0.1)]">
+      {/* Tooltip - rendered via portal to avoid clipping */}
+      {mounted && showTooltip && !isCompleted && whyText && createPortal(
+        <div
+          className="fixed z-[100] pointer-events-none animate-in fade-in duration-150"
+          style={{
+            top: tooltipPos.top,
+            left: tooltipPos.left,
+            width: Math.max(tooltipPos.width, 280),
+          }}
+        >
+          <div className="bg-[#1a1a3a] backdrop-blur-xl border border-violet-500/30 rounded-lg p-4 shadow-[0_4px_30px_rgba(0,0,0,0.4),0_0_20px_rgba(123,47,190,0.2)]">
             <p className="text-xs text-muted-foreground leading-relaxed">
               <span className="text-teal font-medium">Why this course:</span>{" "}
               {whyText}
             </p>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

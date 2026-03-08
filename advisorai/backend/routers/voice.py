@@ -44,6 +44,8 @@ class ChatResponse(BaseModel):
     reply: str
     history: list[ChatMessage]
     board_actions: list[BoardAction] = []
+    suggest_regenerate: bool = False
+    suggest_regenerate_reason: Optional[str] = None
 
 
 ADVISOR_GREETING = (
@@ -206,6 +208,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
         elif action_type == 'MOVE' and len(parts) >= 3:
             board_actions.append(BoardAction(action='MOVE', course_code=parts[0], semester=parts[1], to_semester=parts[2]))
 
+    # Parse SUGGEST_REGENERATE action
+    suggest_regenerate = False
+    suggest_regenerate_reason = None
+    regen_pattern = re.compile(r'\[ACTION:SUGGEST_REGENERATE\|([^\]]*)\]')
+    regen_match = regen_pattern.search(advisor_reply)
+    if regen_match:
+        suggest_regenerate = True
+        suggest_regenerate_reason = regen_match.group(1).strip() or "Your goals have changed"
+
     # Strip action tags from spoken reply
     clean_reply = re.sub(r'\[ACTION:[^\]]*\]', '', advisor_reply).strip()
     # Clean up leftover blank lines
@@ -220,4 +231,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
         reply=clean_reply,
         history=updated_history,
         board_actions=board_actions,
+        suggest_regenerate=suggest_regenerate,
+        suggest_regenerate_reason=suggest_regenerate_reason,
     )

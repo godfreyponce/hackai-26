@@ -30,6 +30,7 @@ export interface Course {
   whyText: string;
   aRate?: number; // A-rate percentage (0-100)
   credits?: number; // credit hours (default 3)
+  grade?: string; // letter grade for completed courses (e.g., "A", "B+")
 }
 
 interface ColumnProps {
@@ -39,6 +40,31 @@ interface ColumnProps {
   courses: Course[];
   isCompleted?: boolean;
   isInProgress?: boolean;
+  isHistorical?: boolean;
+}
+
+// Static (non-draggable) card for historical semesters
+function HistoricalCourseCard({ course, index }: { course: Course; index: number }) {
+  return (
+    <div className="animate-fade-in-up" style={{ animationDelay: `${index * 80}ms` }}>
+      <div className="bg-[#141428]/50 rounded-md p-3.5 border border-green-500/10 opacity-80">
+        <div className="flex items-center justify-between">
+          <p className="font-[var(--font-heading)] font-semibold text-green-400/80 text-xs">{course.code}</p>
+          {course.grade && (
+            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+              ['A+','A','A-'].includes(course.grade) ? 'bg-green-500/20 text-green-400' :
+              ['B+','B','B-'].includes(course.grade) ? 'bg-blue-500/20 text-blue-400' :
+              ['C+','C','C-'].includes(course.grade) ? 'bg-yellow-500/20 text-yellow-400' :
+              'bg-red-500/20 text-red-400'
+            }`}>{course.grade}</span>
+          )}
+        </div>
+        <h3 className="font-[var(--font-heading)] font-medium text-foreground/70 mt-1 text-[13px] leading-tight truncate" style={{ fontFamily: "'Figtree', sans-serif" }}>
+          {course.title}
+        </h3>
+      </div>
+    </div>
+  );
 }
 
 // Draggable Sortable Item Wrapper
@@ -94,44 +120,60 @@ function getCreditWarning(credits: number, semester: string): { color: string; w
 }
 
 // Droppable Column Component
-function DndColumn({ id, title, credits, courses, isCompleted, isInProgress }: ColumnProps) {
+function DndColumn({ id, title, credits, courses, isCompleted, isInProgress, isHistorical }: ColumnProps) {
   const isGraduation = title.includes("🎓");
-  const borderColor = isGraduation ? "border-violet-500/30" : isInProgress ? "border-amber-500/30" : isCompleted ? "border-green-500/20" : "border-violet/10";
+  const borderColor = isHistorical ? "border-green-500/15" : isGraduation ? "border-violet-500/30" : isInProgress ? "border-amber-500/30" : isCompleted ? "border-green-500/20" : "border-violet/10";
   const creditStatus = getCreditWarning(credits, title);
 
   return (
-    <div className={`flex flex-col bg-[#141428]/40 border ${borderColor} rounded-xl p-6 min-h-[400px] min-w-[300px] flex-shrink-0`}>
+    <div
+      data-column-id={id}
+      className={`flex flex-col border rounded-xl p-6 min-h-[400px] flex-shrink-0 ${
+        isHistorical
+          ? "bg-[#0f0f22]/60 min-w-[260px] opacity-85"
+          : "bg-[#141428]/40 min-w-[300px]"
+      } ${borderColor}`}
+    >
       <div className="mb-6 flex justify-between items-end">
         <div>
           <h2
-            className={`font-[var(--font-heading)] font-black text-xl tracking-[-0.02em] ${
-              isInProgress ? "text-amber-400" : isCompleted ? "text-green-400" : "text-foreground"
+            className={`font-[var(--font-heading)] font-black tracking-[-0.02em] ${
+              isHistorical ? "text-green-400/70 text-lg" :
+              isInProgress ? "text-amber-400 text-xl" :
+              isCompleted ? "text-green-400 text-xl" : "text-foreground text-xl"
             }`}
             style={{ fontFamily: "'Figtree', sans-serif" }}
           >
-            {isInProgress && "🟡 "}{title}
+            {isInProgress && "🟡 "}{isHistorical && "✓ "}{title}
           </h2>
           <div className="flex items-center gap-2 mt-1">
-            <span className={`text-sm ${creditStatus.color}`}>{credits} credits</span>
-            {creditStatus.warning && (
+            <span className={`text-sm ${isHistorical ? 'text-green-400/50' : creditStatus.color}`}>{credits} credits</span>
+            {!isHistorical && creditStatus.warning && (
               <span className="text-xs text-red-400/70">⚠ {creditStatus.warning}</span>
             )}
           </div>
         </div>
       </div>
 
-      <div className="flex flex-col gap-4 flex-1">
-        <SortableContext id={id} items={courses.map((c) => c.id)} strategy={verticalListSortingStrategy}>
-          {courses.map((course, index) => (
-            <SortableCourseCard
-              key={course.id}
-              course={course}
-              isCompleted={!!isCompleted}
-              index={index}
-            />
-          ))}
-        </SortableContext>
-        {courses.length === 0 && !isGraduation && (
+      <div className="flex flex-col gap-3 flex-1">
+        {isHistorical ? (
+          // Historical: non-draggable, read-only cards
+          courses.map((course, index) => (
+            <HistoricalCourseCard key={course.id} course={course} index={index} />
+          ))
+        ) : (
+          <SortableContext id={id} items={courses.map((c) => c.id)} strategy={verticalListSortingStrategy}>
+            {courses.map((course, index) => (
+              <SortableCourseCard
+                key={course.id}
+                course={course}
+                isCompleted={!!isCompleted}
+                index={index}
+              />
+            ))}
+          </SortableContext>
+        )}
+        {courses.length === 0 && !isGraduation && !isHistorical && (
           <div className="flex-1 flex items-center justify-center border-2 border-dashed border-violet/10 rounded-lg opacity-50">
             <span className="text-sm text-muted-foreground">Drop courses here</span>
           </div>
@@ -156,6 +198,7 @@ interface DndBoardProps {
   prereqMap?: Record<string, string[]>;  // course_code -> [prereq_codes]
   completedCourses?: string[];           // Already completed course codes
   onCourseMove?: (courseCode: string, fromSemester: string, toSemester: string) => void;
+  scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 // Prereq violation popup
@@ -196,7 +239,7 @@ function PrereqViolationPopup({
   );
 }
 
-export function DndBoard({ columns, setColumns, prereqMap, completedCourses, onCourseMove }: DndBoardProps) {
+export function DndBoard({ columns, setColumns, prereqMap, completedCourses, onCourseMove, scrollContainerRef }: DndBoardProps) {
   const [activeCourse, setActiveCourse] = useState<Course | null>(null);
   const [prereqViolation, setPrereqViolation] = useState<{ course: string; missing: string[] } | null>(null);
 
@@ -244,9 +287,12 @@ export function DndBoard({ columns, setColumns, prereqMap, completedCourses, onC
     const { active } = event;
     const course = active.data.current;
     if (course) {
+      // Prevent dragging from historical columns
+      const sourceCol = findColumnOfCourse(active.id);
+      if (sourceCol && columns[sourceCol]?.isHistorical) return;
+
       setActiveCourse(course as Course);
       // Track source column for the onCourseMove callback
-      const sourceCol = findColumnOfCourse(active.id);
       if (sourceCol) {
         dragSourceRef.current = { columnId: sourceCol, courseCode: (course as Course).code };
       }
@@ -274,6 +320,11 @@ export function DndBoard({ columns, setColumns, prereqMap, completedCourses, onC
       findColumnOfCourse(overId);
 
     if (!activeColumnId || !overColumnId || activeColumnId === overColumnId) {
+      return;
+    }
+
+    // Block moves from/to historical (read-only) columns
+    if (columns[activeColumnId]?.isHistorical || columns[overColumnId]?.isHistorical) {
       return;
     }
 
@@ -384,7 +435,7 @@ export function DndBoard({ columns, setColumns, prereqMap, completedCourses, onC
         />
       )}
 
-      <div className="flex flex-nowrap overflow-x-auto gap-8 pb-32 -mx-2 px-2" style={{ scrollbarWidth: 'thin' }}>
+      <div ref={scrollContainerRef} className="flex flex-nowrap overflow-x-auto gap-8 pb-32 -mx-2 px-2" style={{ scrollbarWidth: 'thin' }}>
         {Object.keys(columns).map((colId) => (
           <DndColumn
             key={colId}
@@ -394,6 +445,7 @@ export function DndBoard({ columns, setColumns, prereqMap, completedCourses, onC
             courses={columns[colId].courses}
             isCompleted={columns[colId].isCompleted}
             isInProgress={columns[colId].isInProgress}
+            isHistorical={columns[colId].isHistorical}
           />
         ))}
       </div>
