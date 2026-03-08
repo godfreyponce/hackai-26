@@ -17,12 +17,12 @@ The backend recommendation engine scores courses based on student interests, pro
 
 ## Challenges We Ran Into
 
-Our biggest challenge was making the voice conversation feel natural. The Web Speech API has built-in timeouts and would cut off mid-sentence or activate while Cali was still speaking,  we had to build a custom silence detection system and strict turn-based guards to prevent the mic from bleeding into Cali's responses. We also ran into merge conflicts coordinating between three separate branches, frontend, backend, and transcript parser all being built simultaneously under time pressure. Finally, bridging Cali's natural language responses to structured course data was tricky — we had to build a regex parser that extracts course codes from conversational text and maps them to the right semester columns in real time.
+Our biggest challenge was making the voice conversation feel natural. The Web Speech API has built-in timeouts and would cut off mid-sentence or activate while the AI Advisor was still speaking,  we had to build a custom silence detection system and strict turn-based guards to prevent the mic from bleeding into AI Advisor's responses. We also ran into merge conflicts coordinating between three separate branches, frontend, backend, and transcript parser all being built simultaneously under time pressure. Finally, bridging AI Advisor's natural language responses to structured course data was tricky — we had to build a regex parser that extracts course codes from conversational text and maps them to the right semester columns in real time.
 
 
 ## Accomplishments We're Proud Of
 
-We're proud that we shipped a fully functional voice-first AI advisor in under 48 hours. The integration between ElevenLabs, Gemini, and the Nebula Labs API creates something that genuinely feels like talking to a knowledgeable advisor, not a chatbot. We're also proud of the real-time course plan that builds as Cali speaks watching courses animate into the board during a live conversation is a genuinely magical demo moment. And the UI built to match the Nebula Labs design language, looks like a real product, not a hackathon project.
+We're proud that we shipped a fully functional voice-first AI advisor in under 48 hours. The integration between ElevenLabs, Gemini, and the Nebula Labs API creates something that genuinely feels like talking to a knowledgeable advisor, not a chatbot. We're also proud of the real-time course plan that builds as AI Advisor speaks watching courses animate into the board during a live conversation is a genuinely magical demo moment. And the UI built to match the Nebula Labs design language, looks like a real product, not a hackathon project.
 
 
 ## What We Learned
@@ -32,7 +32,7 @@ We learned that voice UX is significantly harder than text UX, the margin for er
 
 ## What's Next for Comet Advisor
 
-The immediate next step is expanding our degree flowchart database to cover every UTD major and minor, right now we have CS and SE hardcoded, but the architecture supports any major. We also want to integrate the Nebula Labs professor rating data so Cali can recommend not just the right courses but the right sections with the best professors. Longer term, we want to add a scheduling layer that cross-references the Nebula Rooms API so Cali can recommend courses that actually fit together in a student's weekly schedule. The dream is a single conversation that takes a student from confused freshman to fully planned four-year roadmap in under five minutes.
+The immediate next step is expanding our degree flowchart database to cover every UTD major and minor, right now we have CS and SE hardcoded, but the architecture supports any major. We also want to integrate the Nebula Labs professor rating data so AI Advisor can recommend not just the right courses but the right sections with the best professors. Longer term, we want to add a scheduling layer that cross-references the Nebula Rooms API so AI Advisor can recommend courses that actually fit together in a student's weekly schedule. The dream is a single conversation that takes a student from confused freshman to fully planned four-year roadmap in under five minutes.
 
 ### Scoring Formula
 
