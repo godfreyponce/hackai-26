@@ -8,7 +8,8 @@ import { DndBoard, Course } from "@/components/dnd-board";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Fallback helper to detect UTD courses in text like "CS 1337" or "MATH 2418"
-const COURSE_REGEX = /(?:CS|SE|CE|EE|MATH|STAT|PHYS|CGS|COGS|RHET|GOVT|ECS|BMEN|MECH)[\s]\d{4}/gi;
+// Includes all common UTD subject prefixes for multi-disciplinary degree plans
+const COURSE_REGEX = /(?:CS|SE|CE|EE|MATH|STAT|PHYS|CGS|COGS|RHET|GOVT|ECS|BMEN|MECH|ENGR|HIST|HUMA|ARTS|ECON|PSY|SOC|COMM|ATCM|BA|FIN|MKT|ACCT|CHEM|BIOL|GEOS|NATS|IMS|MIS|OBHR|OPRE)[\s]\d{4}/gi;
 
 // Detect semester mentions in user messages
 const SEMESTER_REGEX = /(?:fall|spring|summer)\s*(?:20)?\d{2}/gi;
@@ -55,6 +56,10 @@ export default function SessionPage() {
   const transcriptCtx = useRef<string | null>(null);
   const transcriptGpa = useRef<number | null>(null);
   const transcriptCredits = useRef<number>(0);
+  const transcriptMajor = useRef<string>("Computer Science");
+  const transcriptStartSem = useRef<string | null>(null);
+  const transcriptExpectedGrad = useRef<string | null>(null);
+  const transcriptCompletedCodes = useRef<string[]>([]);
   
   // Voice feature refs
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -87,6 +92,38 @@ export default function SessionPage() {
         // Store GPA and credits for plan generation
         transcriptGpa.current = t.gpa || null;
         transcriptCredits.current = t.total_credit_hours || 0;
+        transcriptMajor.current = t.major || "Computer Science";
+
+        // Extract completed course codes (excluding W and IP)
+        transcriptCompletedCodes.current = validCourses
+          .filter((c: any) => c.grade !== "IP")
+          .map((c: any) => c.course_code);
+
+        // Determine start semester (earliest semester in transcript)
+        const allSemesters = validCourses
+          .map((c: any) => c.semester)
+          .filter((s: string) => s && !s.includes("Transfer") && s !== "Unknown");
+        if (allSemesters.length > 0) {
+          // Sort semesters chronologically: "2024 Fall" -> sort by year then season
+          const seasonOrder: Record<string, number> = { "Spring": 0, "Summer": 1, "Fall": 2 };
+          allSemesters.sort((a: string, b: string) => {
+            const [yearA, seasonA] = a.split(" ");
+            const [yearB, seasonB] = b.split(" ");
+            if (yearA !== yearB) return parseInt(yearA) - parseInt(yearB);
+            return (seasonOrder[seasonA] || 0) - (seasonOrder[seasonB] || 0);
+          });
+          const earliest = allSemesters[0];
+          // Convert "2024 Fall" to "Fall 2024" for the API
+          const parts = earliest.split(" ");
+          if (parts.length === 2) {
+            transcriptStartSem.current = `${parts[1]} ${parts[0]}`;
+          }
+          // Calculate expected graduation: 4 years from start
+          if (transcriptStartSem.current) {
+            const startYear = parseInt(parts[0]);
+            transcriptExpectedGrad.current = `Spring ${startYear + 4}`;
+          }
+        }
 
         // Separate in-progress (IP grade or current semester) from completed
         const inProgressCourses: Course[] = [];
@@ -449,26 +486,40 @@ export default function SessionPage() {
     document.body.removeChild(a);
   }, [columns]);
 
-  const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string}) => {
+  const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string, note?: string}) => {
     const newColumns: Record<string, any> = {
       inProgress: columns.inProgress, // preserve in-progress
     };
 
     plan.semesters.forEach((sem: any) => {
       const key = sem.semester.replace(/\s+/g, "_");
+      const courses = (sem.courses || []).map((c: any) => ({
+        id: `${c.code}-${Math.random().toString(36).substr(2, 9)}`,
+        code: c.code,
+        title: c.title || c.code,
+        professor: "Loading...",
+        badge: "Degree Plan" as const,
+        whyText: c.reason || "Part of your degree plan.",
+        credits: c.credits || 3,
+      }));
+      const totalCredits = courses.reduce((sum: number, c: any) => sum + (c.credits || 3), 0);
+
       newColumns[key] = {
         title: sem.semester,
-        credits: sem.total_credits || 0,
-        courses: (sem.courses || []).map((c: any) => ({
-          id: `${c.code}-${Math.random().toString(36).substr(2, 9)}`,
-          code: c.code,
-          title: c.title || c.code,
-          professor: "Loading...",
-          badge: "Degree Plan" as const,
-          whyText: c.reason || "Part of your degree plan.",
-        })),
+        credits: totalCredits,
+        courses,
       };
     });
+
+    // Add graduation marker column
+    if (plan.graduation_semester) {
+      const gradKey = "graduation";
+      newColumns[gradKey] = {
+        title: `🎓 ${plan.graduation_semester}`,
+        credits: 0,
+        courses: [],
+      };
+    }
 
     setColumns(newColumns);
     setPlanGenerated(true);
@@ -485,14 +536,23 @@ export default function SessionPage() {
 
     try {
       const t = JSON.parse(sessionStorage.getItem("transcriptData") || "{}");
+
+      // Determine the next semester to start planning from
+      // Use the target semester from conversation, or compute from current date
+      const planStartSemester = targetSemester;
+
       const res = await fetch(`${API_BASE}/api/recommend/full-plan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           transcript_context: transcriptCtx.current,
-          current_semester: targetSemester,
+          current_semester: planStartSemester,
           total_credit_hours: t.total_credit_hours || 0,
           gpa: t.gpa || null,
+          start_semester: transcriptStartSem.current,
+          target_graduation: transcriptExpectedGrad.current,
+          major: transcriptMajor.current,
+          completed_courses: transcriptCompletedCodes.current,
         }),
       });
 
@@ -500,8 +560,9 @@ export default function SessionPage() {
         const plan = await res.json();
         if (plan.semesters && plan.semesters.length > 0) {
           buildColumnsFromPlan(plan);
+          const noteText = plan.note ? ` ${plan.note}` : "";
           playAudio(
-            `Your full ${plan.total_semesters}-semester plan is ready! Graduating ${plan.graduation_semester}. You can drag courses around to customize it.`,
+            `Your full ${plan.total_semesters}-semester plan is ready! Graduating ${plan.graduation_semester}. You can scroll right to see all semesters and drag courses around to customize it.${noteText}`,
             startListening
           );
         } else {

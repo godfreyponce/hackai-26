@@ -1,18 +1,114 @@
 """
 data_loader.py — Load and index UTD course catalog from Nebula API data.
 
-Reads combinedDB.courses.json and combinedDB.degrees.json,
+Fetches from Nebula Labs API if local cache is missing or stale,
 deduplicates by latest catalog year, and provides fast lookups.
 """
 
 import json
 import logging
 import os
+import asyncio
+from datetime import datetime, timedelta
 from typing import Optional
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+NEBULA_BASE = "https://api.utdnebula.com"
+CACHE_TTL = timedelta(days=7)
+
+# Subject prefixes to fetch from Nebula
+SUBJECTS = ["CS", "SE", "CE", "EE", "MATH", "STAT", "PHYS", "CGS", "COGS", "RHET", "GOVT", "ECS", "ENGR", "BMEN", "MECH"]
+
+
+def _get_nebula_headers() -> dict:
+    """Get headers for Nebula API requests."""
+    api_key = os.environ.get("NEBULA_API_KEY", "")
+    return {"x-api-key": api_key} if api_key else {}
+
+
+async def _fetch_subject_courses(client: httpx.AsyncClient, subject: str) -> list[dict]:
+    """Fetch all courses for a single subject prefix."""
+    courses = []
+    offset = 0
+    while True:
+        try:
+            resp = await client.get(
+                f"{NEBULA_BASE}/course",
+                params={"subject_prefix": subject, "offset": offset},
+                headers=_get_nebula_headers(),
+                timeout=30.0,
+            )
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            batch = data.get("data", [])
+            if not batch:
+                break
+            courses.extend(batch)
+            if len(batch) < 20:
+                break
+            offset += len(batch)
+        except Exception as e:
+            logger.warning(f"Failed to fetch {subject} courses: {e}")
+            break
+    return courses
+
+
+async def _fetch_all_courses() -> list[dict]:
+    """Fetch courses from Nebula API for all subject prefixes."""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        tasks = [_fetch_subject_courses(client, s) for s in SUBJECTS]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_courses = []
+    for r in results:
+        if isinstance(r, list):
+            all_courses.extend(r)
+    return all_courses
+
+
+def _is_cache_stale(path: str) -> bool:
+    """Check if the cache file is missing or older than TTL."""
+    if not os.path.exists(path):
+        return True
+    mtime = datetime.fromtimestamp(os.path.getmtime(path))
+    return datetime.now() - mtime > CACHE_TTL
+
+
+def fetch_and_cache_courses() -> list[dict]:
+    """Fetch courses from Nebula API and cache to disk."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    cache_path = os.path.join(DATA_DIR, "combinedDB.courses.json")
+
+    # Return cached if fresh
+    if not _is_cache_stale(cache_path):
+        logger.info("Using cached course data")
+        with open(cache_path, "r") as f:
+            return json.load(f)
+
+    # Fetch from API
+    logger.info("Fetching courses from Nebula Labs API...")
+    try:
+        courses = asyncio.run(_fetch_all_courses())
+        if courses:
+            with open(cache_path, "w") as f:
+                json.dump(courses, f)
+            logger.info(f"Cached {len(courses)} courses to {cache_path}")
+            return courses
+    except Exception as e:
+        logger.error(f"Failed to fetch from Nebula: {e}")
+
+    # Try to load stale cache as fallback
+    if os.path.exists(cache_path):
+        logger.warning("Using stale cache as fallback")
+        with open(cache_path, "r") as f:
+            return json.load(f)
+
+    return []
 
 
 class CourseInfo:
@@ -61,15 +157,20 @@ class CourseDataStore:
         self._loaded = True
 
     def _load_courses(self):
-        """Load and dedupe courses from combinedDB.courses.json."""
+        """Load and dedupe courses from combinedDB.courses.json or fetch from API."""
         path = os.path.join(DATA_DIR, "combinedDB.courses.json")
-        if not os.path.exists(path):
-            logger.warning(f"Courses file not found: {path}")
-            return
 
-        logger.info(f"Loading courses from {path}...")
-        with open(path, "r") as f:
-            raw_courses = json.load(f)
+        # Try to fetch/cache if missing or stale
+        if _is_cache_stale(path):
+            raw_courses = fetch_and_cache_courses()
+        else:
+            logger.info(f"Loading courses from {path}...")
+            with open(path, "r") as f:
+                raw_courses = json.load(f)
+
+        if not raw_courses:
+            logger.warning("No courses loaded - check Nebula API key")
+            return
 
         # Dedupe: keep latest catalog_year per course code
         best: dict[str, dict] = {}

@@ -9,6 +9,10 @@ Routes:
   POST /api/voice/query    — Voice query (teammate's part)
 """
 
+# Load .env first, before any other imports that might need env vars
+from dotenv import load_dotenv
+load_dotenv()
+
 import logging
 from contextlib import asynccontextmanager
 

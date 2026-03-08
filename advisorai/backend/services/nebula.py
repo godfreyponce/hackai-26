@@ -398,9 +398,10 @@ async def get_best_professor(subject: str, course_number: str) -> dict | None:
     Returns:
         {"name": str, "a_rate": float, "total_students": int} or None
     """
-    # Grade distribution indices per CLAUDE.md
+    # Grade distribution format (14 elements):
+    # [A+, A, A-, B+, B, B-, C+, C, C-, D+, D, D-, F, W]
+    # A-rate = (A+ + A + A-) / (total excluding W)
     A_INDICES = [0, 1, 2]  # A+, A, A-
-    TOTAL_INDEX = 23
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
@@ -424,10 +425,14 @@ async def get_best_professor(subject: str, course_number: str) -> dict | None:
 
     for section in sections:
         dist = section.get("grade_distribution", [])
-        if len(dist) < 24 or dist[TOTAL_INDEX] < 5:
+        if len(dist) < 13:  # Need at least A+ through F
             continue
 
-        total = dist[TOTAL_INDEX]
+        # Total is sum of grades A+ through F (indices 0-12), excluding W (index 13)
+        total = sum(dist[i] for i in range(13) if i < len(dist))
+        if total < 5:  # Skip sections with very few students
+            continue
+
         a_grades = sum(dist[i] for i in A_INDICES if i < len(dist))
 
         for prof in section.get("professor_details", []):

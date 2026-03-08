@@ -415,6 +415,35 @@ def _validate_semester_credits(semester_name: str, courses: list, total_credits:
     return courses, total_credits
 
 
+def _count_semesters_between(start: str, end: str) -> int:
+    """Count the number of semesters between two semester labels (inclusive of end)."""
+    import re as _re
+    seasons = ["Spring", "Summer", "Fall"]
+
+    def parse_sem(s: str) -> tuple:
+        m = _re.match(r"(Spring|Summer|Fall)\s+(\d{4})", s, _re.IGNORECASE)
+        if not m:
+            return (0, 2026)  # fallback
+        return (seasons.index(m.group(1).capitalize()), int(m.group(2)))
+
+    start_idx, start_year = parse_sem(start)
+    end_idx, end_year = parse_sem(end)
+
+    # Calculate total semesters
+    count = 0
+    idx, year = start_idx, start_year
+    while (year, idx) <= (end_year, end_idx):
+        count += 1
+        idx += 1
+        if idx >= len(seasons):
+            idx = 0
+            year += 1
+        if count > 20:  # safety limit
+            break
+
+    return max(1, count)
+
+
 def _next_semesters(start: str, count: int) -> list[str]:
     """Generate a list of upcoming semester labels starting from `start`."""
     import re as _re
@@ -442,73 +471,180 @@ async def generate_full_plan(
     current_semester: str,
     total_credit_hours: float,
     gpa: Optional[float] = None,
+    target_graduation: Optional[str] = None,
+    start_semester: Optional[str] = None,
+    major: Optional[str] = None,
+    completed_courses: Optional[list[str]] = None,
 ) -> dict:
     """
     Generate a complete multi-semester academic plan using Gemini.
-    Returns a dict with 'semesters' list and 'graduation_semester'.
+
+    Args:
+        transcript_context: Full transcript summary
+        career_goal: Optional career interest
+        current_semester: Starting semester (e.g., "Fall 2026")
+        total_credit_hours: Credits completed so far
+        gpa: Student's cumulative GPA
+        target_graduation: Optional target graduation (e.g., "Spring 2027" for early graduation)
+        start_semester: When the student first enrolled (e.g., "Fall 2024")
+        major: Student's major for degree plan lookup
+        completed_courses: List of completed course codes
+
+    Returns:
+        dict with 'semesters' list and 'graduation_semester'
     """
     if not client:
         return {"semesters": [], "graduation_semester": "Unknown", "total_semesters": 0}
 
     import math
-    TOTAL_DEGREE_HOURS = 124
+    from services.degree_plans import (
+        get_degree_plan, get_remaining_courses, get_all_required_courses,
+    )
+
+    # Look up degree plan
+    plan = get_degree_plan(major or "Computer Science")
+    TOTAL_DEGREE_HOURS = plan.get("total_hours", 124)
     AVG_HOURS_PER_SEMESTER = 15
+    MAX_FALL_SPRING_HOURS = 18
+    MAX_SUMMER_HOURS = 9
+
     remaining_hours = max(0, TOTAL_DEGREE_HOURS - total_credit_hours)
     semesters_remaining = math.ceil(remaining_hours / AVG_HOURS_PER_SEMESTER)
 
+    # Build remaining courses from degree plan
+    completed_set = set(completed_courses or [])
+    remaining_by_cat = get_remaining_courses(plan, list(completed_set))
+    prereq_chains = plan.get("prerequisite_chains", {})
+
+    remaining_courses_text = ""
+    for cat_key, courses in remaining_by_cat.items():
+        cat_label = plan["categories"].get(cat_key, {}).get("label", cat_key)
+        remaining_courses_text += f"\n{cat_label}:\n"
+        for code in courses:
+            prereqs = prereq_chains.get(code, [])
+            prereq_str = f" (prereqs: {', '.join(prereqs)})" if prereqs else ""
+            remaining_courses_text += f"  - {code}{prereq_str}\n"
+
+    all_prereqs_text = ""
+    for course, prereqs in prereq_chains.items():
+        if course not in completed_set and prereqs:
+            all_prereqs_text += f"  {course} requires: {', '.join(prereqs)}\n"
+
+    # Calculate expected graduation if start_semester provided
+    if not target_graduation and start_semester:
+        # 4 years from start = 8 fall/spring semesters
+        import re as _re
+        m = _re.match(r"(Spring|Summer|Fall)\s+(\d{4})", start_semester, _re.IGNORECASE)
+        if m:
+            start_year = int(m.group(2))
+            grad_year = start_year + 4
+            target_graduation = f"Spring {grad_year}"
+
+    # Calculate minimum possible semesters (with max credits)
+    min_possible_semesters = math.ceil(remaining_hours / MAX_FALL_SPRING_HOURS)
+
+    # Early graduation handling
+    early_grad_note = ""
+    if target_graduation:
+        # Count semesters from current to target
+        target_sems = _count_semesters_between(current_semester, target_graduation)
+        if target_sems < min_possible_semesters:
+            early_grad_note = (
+                f"\n\nEARLY GRADUATION REQUEST: Student requested {target_graduation}, "
+                f"but this requires {remaining_hours} credits in {target_sems} semesters. "
+                f"This is NOT POSSIBLE without exceeding UTD's max credit limits or violating prerequisite chains. "
+                f"Generate the FASTEST realistic plan ({min_possible_semesters}+ semesters) and set the 'note' field to: "
+                f"'Sorry, it is not possible to graduate by {target_graduation} without exceeding UTD's maximum allowed credits per semester or violating prerequisite chains. The fastest possible plan is shown below.'"
+            )
+        else:
+            early_grad_note = (
+                f"\n\nTARGET GRADUATION: {target_graduation}. "
+                f"Generate a plan that reaches this goal. Adjust credit loads as needed "
+                f"(up to 18/Fall-Spring, 9/Summer)."
+            )
+            semesters_remaining = target_sems
+
     gpa_note = build_gpa_guidance(gpa)
 
-    semester_labels = _next_semesters(current_semester, semesters_remaining + 1)
+    semester_labels = _next_semesters(current_semester, max(semesters_remaining, min_possible_semesters) + 2)
 
-    prompt = f"""You are CometAdvisor, generating a complete multi-semester degree plan for a UTD student.
+    prompt = f"""You are CometAdvisor, an AI-powered academic advisor generating a COMPLETE multi-semester degree plan for a UTD student from NOW until GRADUATION.
 
-Student data:
+STUDENT DATA (from parsed transcript):
 {transcript_context}
 
 Career goal: {career_goal or "General ECS degree"}
 Starting semester: {current_semester}
+{f"Student started college: {start_semester}" if start_semester else ""}
+{f"Expected graduation: {target_graduation}" if target_graduation else ""}
 Completed credit hours: {total_credit_hours}
-Remaining hours to graduate (124 total): {remaining_hours}
+Remaining hours to graduate ({TOTAL_DEGREE_HOURS} total required): {remaining_hours}
 Estimated semesters remaining: {semesters_remaining}
 {gpa_note}
+{early_grad_note}
 
-Upcoming semesters in order: {", ".join(semester_labels[:semesters_remaining])}
+SEMESTERS TO PLAN (generate ALL of these): {", ".join(semester_labels[:semesters_remaining + 1])}
 
-MULTI-DISCIPLINARY REQUIREMENTS:
-- Include ALL required courses for the degree: CS, MATH, PHYS, ECS, RHET, GOVT, and any other subjects
-- Common requirements: MATH 2413, MATH 2414, MATH 2418, PHYS 2325, PHYS 2326, RHET 1302, GOVT 2305, GOVT 2306, ECS 2390
-- Do NOT only recommend CS courses — a complete degree plan includes math, physics, and core curriculum
+REMAINING REQUIRED COURSES (from official degree plan — you MUST schedule ALL of these):
+{remaining_courses_text}
 
-CREDIT HOUR RULES (STRICT - UTD POLICY):
-- Fall/Spring semesters: 12-18 credit hours (target 15, which is 5 x 3-credit courses)
-- Summer semesters: MAXIMUM 9 credit hours (3 courses) — absolutely no more
-- NEVER schedule more than 6 courses (18 credits) in Fall/Spring or 4 courses (12 credits) in Summer
-- If early graduation is requested but impossible within these limits, say so
+PREREQUISITE CHAINS (MUST ENFORCE — a course CANNOT appear before its prereqs):
+{all_prereqs_text}
 
-PREREQUISITE RULES (STRICT):
-- Respect ALL prerequisites — a course CANNOT appear before its prereqs are completed
-- Common chains: MATH 2413 → MATH 2414 → MATH 2418, CS 1337 → CS 2336 → CS 3345, PHYS 2325 → PHYS 2326
-- Do not repeat any course already completed in the transcript
-- Distribute lower-level courses in earlier semesters
+YOUR TASK:
+Generate a COMPLETE semester-by-semester plan from {current_semester} until graduation. Each semester is a column in a horizontally scrollable board. Include EVERY remaining required course distributed across all semesters until graduation.
 
-COURSE CODES:
-- Use ONLY real UTD course codes: CS, SE, CE, EE, MATH, STAT, PHYS, CGS, COGS, RHET, GOVT, ECS, BMEN, MECH
-- Include the accurate credit hours (most are 3, but MATH/PHYS labs may be 1, some MATH are 4)
+MULTI-DISCIPLINARY REQUIREMENTS (CRITICAL):
+- A CS degree requires MORE than just CS courses. You MUST include:
+  - Math: MATH 2413, MATH 2414, MATH 2418 (if not completed)
+  - Physics: PHYS 2325, PHYS 2125, PHYS 2326, PHYS 2126 (if not completed)
+  - Core curriculum: RHET 1302, GOVT 2305, GOVT 2306, ECS 2390
+  - CS courses: All required core and electives
+- Do NOT generate a plan with only CS courses — that is INVALID
 
-OUTPUT FORMAT (ONLY valid JSON, no markdown, no extra text):
+CREDIT HOUR RULES (STRICT UTD POLICY):
+- Fall/Spring semesters: 12-18 credit hours (target 15 = 5 courses × 3 credits)
+- Summer semesters: MAXIMUM 9 credit hours (3 courses) — NO MORE
+- NEVER exceed 6 courses (18 credits) in Fall/Spring or 3 courses (9 credits) in Summer
+- If target graduation is impossible within these limits, explain why in the "note" field
+
+PREREQUISITE CHAINS (MUST ENFORCE):
+- MATH: MATH 2413 → MATH 2414 → MATH 2418
+- Physics: MATH 2413 → PHYS 2325 (coreq: MATH 2414), PHYS 2325 → PHYS 2326
+- CS early: CS 1436 → CS 1337 → CS 2336 → CS 3345
+- CS core: CS 2305 + CS 2336 → CS 3345 → CS 4349
+- CS systems: CS 2340 + CS 3377 + CS 3345 → CS 4348
+- CS upper: CS 3345 → CS 4347, CS 4337, CS 4384
+- CS capstone: CS 3354 + CS 3345 → CS 4485
+- A course CANNOT appear in a semester unless ALL its prereqs are in earlier semesters or completed
+
+COURSE OFFERING PATTERNS:
+- Most CS courses: offered every Fall and Spring
+- CS 4485 (Senior Project): typically Fall only or requires 2-semester sequence
+- Summer: limited offerings — prefer core curriculum and math courses
+
+OUTPUT FORMAT (ONLY valid JSON, no markdown fences, no explanation):
 {{
   "semesters": [
     {{
       "semester": "Fall 2026",
       "courses": [
         {{"code": "CS 3345", "title": "Data Structures and Algorithms", "credits": 3, "reason": "Core requirement, prereqs met"}},
-        {{"code": "MATH 2418", "title": "Linear Algebra", "credits": 4, "reason": "Math requirement, prereq for CS 3341"}}
+        {{"code": "MATH 2418", "title": "Linear Algebra", "credits": 4, "reason": "Math requirement, prereq for CS 3341"}},
+        {{"code": "PHYS 2326", "title": "Electromagnetism", "credits": 3, "reason": "Physics requirement"}},
+        {{"code": "GOVT 2305", "title": "Government I", "credits": 3, "reason": "Core curriculum"}},
+        {{"code": "CS 3377", "title": "Systems Programming", "credits": 3, "reason": "Core requirement"}}
       ],
+      "total_credits": 16
+    }},
+    {{
+      "semester": "Spring 2027",
+      "courses": [...],
       "total_credits": 15
     }}
   ],
   "graduation_semester": "Spring 2028",
-  "note": "Optional: brief note if early graduation was requested but not possible"
+  "note": "Plan includes all remaining degree requirements. Graduation in Spring 2028 with standard 15-credit semesters."
 }}"""
 
     try:

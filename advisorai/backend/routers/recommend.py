@@ -135,6 +135,9 @@ class FullPlanRequest(BaseModel):
     total_credit_hours: float = 0.0
     gpa: Optional[float] = None
     target_graduation: Optional[str] = None  # e.g. "Spring 2027" for early graduation requests
+    start_semester: Optional[str] = None     # e.g. "Fall 2024" — when student started college
+    major: Optional[str] = None              # e.g. "Computer Science"
+    completed_courses: Optional[list[str]] = None  # List of completed course codes
 
 
 @router.post("/full-plan")
@@ -148,6 +151,10 @@ async def generate_full_degree_plan(request: FullPlanRequest):
     - current_semester: e.g. "Fall 2026"
     - total_credit_hours: Credits completed so far
     - gpa: Student's cumulative GPA (optional)
+    - target_graduation: Optional target grad date
+    - start_semester: When student started college (to compute 4-year grad)
+    - major: Student's major for degree plan lookup
+    - completed_courses: List of completed course codes
 
     Returns:
     - {semesters: [{semester, courses: [{code, title, credits, reason}], total_credits}],
@@ -160,6 +167,10 @@ async def generate_full_degree_plan(request: FullPlanRequest):
             current_semester=request.current_semester,
             total_credit_hours=request.total_credit_hours,
             gpa=request.gpa,
+            target_graduation=request.target_graduation,
+            start_semester=request.start_semester,
+            major=request.major,
+            completed_courses=request.completed_courses,
         )
         return plan
     except Exception as e:
