@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { AIAvatar } from "@/components/ai-avatar";
-import { Download, Loader2, ChevronRight, ChevronDown, Mic, MicOff, Square } from "lucide-react";
+import { Download, Loader2, ChevronRight, ChevronDown } from "lucide-react";
 import { DndBoard, Course } from "@/components/dnd-board";
+import { VoiceOrb } from "@/components/voice-orb";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -14,12 +14,6 @@ const COURSE_REGEX = /(?:CS|SE|CE|EE|MATH|STAT|PHYS|CGS|COGS|RHET|GOVT|ECS|BMEN|
 const SEMESTER_REGEX = /(?:fall|spring|summer)\s*(?:20)?\d{2}/gi;
 
 export default function SessionPage() {
-  const [messages, setMessages] = useState<any[]>([]);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [advisorStatus, setAdvisorStatus] = useState<"listening" | "speaking" | "idle">("idle");
-  const [isLoading, setIsLoading] = useState(false);
-  const [sessionEnded, setSessionEnded] = useState(false);
   const [showPrevious, setShowPrevious] = useState(false);
   const [targetSemester, setTargetSemester] = useState("Fall 2026");
   const [conciseMode, setConciseMode] = useState(true); // Default ON for voice
@@ -50,17 +44,9 @@ export default function SessionPage() {
     }
   });
 
-  const chatHistory = useRef<any[]>([]);
-  const messageCount = useRef(0);
   const transcriptCtx = useRef<string | null>(null);
   const transcriptGpa = useRef<number | null>(null);
   const transcriptCredits = useRef<number>(0);
-  
-  // Voice feature refs
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const recognitionRef = useRef<any>(null);
-  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const isPlayingRef = useRef(false); // Guard against audio self-interrupt
 
   // Load transcript data into columns on mount
   useEffect(() => {
@@ -139,198 +125,6 @@ export default function SessionPage() {
       }
     }));
   }, [targetSemester]);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = "en-US";
-
-        recognition.onresult = (event: any) => {
-          let latestTranscript = "";
-          for (let i = 0; i < event.results.length; i++) {
-            latestTranscript += event.results[i][0].transcript;
-          }
-
-          // If the AI is currently speaking and user starts talking, interrupt the AI
-          if (isPlayingRef.current) {
-            // Only interrupt if the user actually said a recognizable word, not just noise
-            if (latestTranscript.trim().length > 2) {
-               stopAudio();
-               // We don't want to immediately send just the interrupt word, 
-               // we want to let them finish their thought
-            }
-          }
-
-          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-
-          silenceTimerRef.current = setTimeout(() => {
-            // Only auto-send if AI is NOT speaking, OR if user interrupted
-            if (!isPlayingRef.current) {
-              if (recognitionRef.current) recognitionRef.current.stop();
-              handleSend(latestTranscript);
-            }
-          }, 1500);
-        };
-
-        recognition.onspeechend = () => {
-           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-           recognition.stop();
-        };
-
-        recognition.onend = () => {
-          setIsRecording(false);
-          setAdvisorStatus((prev) => prev === "speaking" ? "speaking" : "idle");
-        };
-
-        recognition.onerror = (event: any) => {
-          console.error("Speech recognition error", event.error);
-          setIsRecording(false);
-          setAdvisorStatus("idle");
-        };
-
-        recognitionRef.current = recognition;
-      }
-    }
-    return () => {
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    }
-  }, []);
-
-  // Stop active audio playback (both ElevenLabs and Browser TTS)
-  const stopAudio = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
-    }
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-    isPlayingRef.current = false;
-    setIsSpeaking(false);
-    setAdvisorStatus("listening");
-  }, []);
-
-  const playAudio = async (text: string, onEnded?: () => void) => {
-    // Guard: don't interrupt ongoing playback automatically, but stop it if manually requested
-    if (isPlayingRef.current) stopAudio();
-    isPlayingRef.current = true;
-
-    // Stop speech recognition timer so we don't auto-send the AI's own audio
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    
-    // We intentionally DO NOT stop recognitionRef here so user can interrupt.
-
-    try {
-      const res = await fetch("/api/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-
-      if (!res.ok) throw new Error("TTS failed");
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-
-      // Clean up previous audio
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = "";
-      }
-
-      const audio = new Audio(url);
-      audioRef.current = audio;
-
-      // Set state AFTER audio is ready (playAudio owns state transitions)
-      setAdvisorStatus("speaking");
-      setIsSpeaking(true);
-
-      audio.onended = () => {
-        URL.revokeObjectURL(url);
-        isPlayingRef.current = false;
-        setIsSpeaking(false);
-        setAdvisorStatus("listening");
-        // startListening is no longer passed as onEnded, because mic stays on
-        if (onEnded) onEnded();
-      };
-
-      audio.onerror = () => {
-        URL.revokeObjectURL(url);
-        isPlayingRef.current = false;
-        setIsSpeaking(false);
-        setAdvisorStatus("listening");
-        if (onEnded) onEnded();
-      };
-
-      await audio.play().catch(e => {
-        console.warn("Autoplay was blocked by browser:", e);
-        URL.revokeObjectURL(url);
-        isPlayingRef.current = false;
-        setIsSpeaking(false);
-        setAdvisorStatus("listening");
-        if (onEnded) onEnded();
-      });
-
-    } catch (error) {
-      console.warn("ElevenLabs failed, using browser TTS");
-      isPlayingRef.current = false;
-      // Fall back to browser speech
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 1.05;
-        utterance.onend = () => {
-          setIsSpeaking(false);
-          setAdvisorStatus("listening");
-          if (onEnded) onEnded();
-        };
-        utterance.onerror = () => {
-          setIsSpeaking(false);
-          setAdvisorStatus("listening");
-          if (onEnded) onEnded();
-        };
-        window.speechSynthesis.speak(utterance);
-      } else {
-        setIsSpeaking(false);
-        setAdvisorStatus("listening");
-        if (onEnded) onEnded();
-      }
-    }
-  };
-
-  const startListening = () => {
-    if (recognitionRef.current && !isRecording) {
-      setIsRecording(true);
-      setAdvisorStatus("listening");
-      try {
-        recognitionRef.current.start();
-      } catch (e) {
-        console.log("Recognition already started");
-      }
-    }
-  };
-
-  // Start chat on mount
-  useEffect(() => {
-    const startChat = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/voice/start`, { method: "POST" });
-        if (res.ok) {
-          const data = await res.json();
-          chatHistory.current = data.history;
-          startListening(); // Turn on mic FIRST
-          playAudio(data.reply);
-        }
-      } catch (err) {
-        startListening(); // Turn on mic FIRST
-        playAudio("Hey! I'm Comet Advisor. What courses are you thinking about?");
-      }
-    };
-    startChat();
-  }, []);
 
   // Detect semester from user text (e.g. "Fall 2026", "Spring 2027")
   const detectTargetSemester = (text: string) => {
@@ -436,58 +230,6 @@ export default function SessionPage() {
     }
   };
 
-  const handleSend = async (userText: string) => {
-    if (!userText.trim() || isLoading) return;
-
-    messageCount.current += 1;
-    setIsLoading(true);
-
-    // Detect target semester from user message
-    detectTargetSemester(userText);
-
-    try {
-      const res = await fetch(`${API_BASE}/api/voice/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userText,
-          history: chatHistory.current,
-          transcript_context: transcriptCtx.current,
-          concise: conciseMode,
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        chatHistory.current = data.history;
-        
-        // Parse the advisor's text and update board
-        await extractAndAddCourses(data.reply);
-
-        playAudio(data.reply);
-      } else {
-        playAudio("I had trouble understanding that. Could you try again?");
-      }
-    } catch (err) {
-      playAudio("I'm having trouble connecting. Please try again.");
-    }
-
-    setIsLoading(false);
-  };
-
-  const handleMicToggle = useCallback(() => {
-    if (isRecording) {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch {}
-      }
-      setIsRecording(false);
-      setAdvisorStatus("idle");
-    } else {
-      if (isPlayingRef.current) stopAudio();
-      startListening();
-    }
-  }, [isRecording, stopAudio]);
-
   const handleExportPlan = useCallback(() => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(columns, null, 2));
     const a = document.createElement("a");
@@ -549,16 +291,10 @@ export default function SessionPage() {
         const plan = await res.json();
         if (plan.semesters && plan.semesters.length > 0) {
           buildColumnsFromPlan(plan);
-          playAudio(
-            `Your full ${plan.total_semesters}-semester plan is ready! Graduating ${plan.graduation_semester}. You can drag courses around to customize it.`,
-            startListening
-          );
-        } else {
-          playAudio("I had trouble building the plan. Try asking me about specific semesters instead.", startListening);
         }
       }
     } catch {
-      playAudio("Couldn't generate the plan right now. Please try again.", startListening);
+      console.error("Couldn't generate plan");
     }
 
     setIsGeneratingPlan(false);
@@ -582,57 +318,19 @@ export default function SessionPage() {
       <div className="max-w-7xl mx-auto w-full flex flex-col items-center">
 
         {/* Top Center: Voice Avatar */}
-        <div className="flex flex-col items-center mb-16 relative">
-           <AIAvatar isSpeaking={isSpeaking} status={advisorStatus} />
-           
-           {isLoading && (
-             <div className="mt-4 flex items-center gap-2 text-muted-foreground animate-pulse">
-               <Loader2 className="w-4 h-4 animate-spin" />
-               <span className="text-sm">Thinking...</span>
-             </div>
-           )}
-
-           {/* AI Controls */}
-           <div className="flex gap-4 mt-6">
-             {/* Mic Toggle Button */}
-             <button 
-               onClick={handleMicToggle}
-               className={`px-5 py-2.5 rounded-full border flex items-center gap-2.5 transition-all shadow-sm ${
-                 isRecording 
-                   ? "bg-red-500/10 border-red-500/50 hover:bg-red-500/20 text-red-500" 
-                   : "border-violet-500/20 hover:bg-violet-500/10 hover:border-violet-500 text-muted-foreground"
-               }`}
-             >
-               {isRecording ? (
-                 <>
-                   <Mic className="w-4 h-4" />
-                   Listening...
-                 </>
-               ) : (
-                 <>
-                   <MicOff className="w-4 h-4" />
-                   Tap to speak
-                 </>
-               )}
-             </button>
-
-             {/* Stop Speaking Button (Only visible when AI is speaking) */}
-             {isPlayingRef.current && (
-               <button 
-                 onClick={stopAudio}
-                 className="px-5 py-2.5 rounded-full border border-violet-500/20 bg-[#141428] hover:bg-violet-500/10 hover:border-violet-500 text-muted-foreground flex items-center gap-2.5 transition-all shadow-sm"
-               >
-                 <Square fill="currentColor" className="w-3.5 h-3.5" />
-                 Stop AI
-               </button>
-             )}
-           </div>
+        <div className="flex flex-col items-center mb-16 relative w-full">
+           <VoiceOrb 
+             transcriptContext={transcriptCtx.current} 
+             conciseMode={conciseMode} 
+             onUserSpeech={detectTargetSemester} 
+             onAIResponse={extractAndAddCourses} 
+           />
 
            {/* Generate My Plan Button */}
            <button
              onClick={handleGeneratePlan}
-             disabled={isGeneratingPlan || isLoading}
-             className="mt-6 px-6 py-3 rounded-xl bg-violet-600/80 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm flex items-center gap-2.5 shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:shadow-[0_0_30px_rgba(139,92,246,0.5)] transition-all"
+             disabled={isGeneratingPlan}
+             className="mt-8 px-6 py-3 rounded-xl bg-violet-600/80 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm flex items-center gap-2.5 shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:shadow-[0_0_30px_rgba(139,92,246,0.5)] transition-all"
            >
              {isGeneratingPlan ? (
                <><Loader2 className="w-4 h-4 animate-spin" /> Generating Plan...</>
@@ -693,8 +391,8 @@ export default function SessionPage() {
           </div>
         )}
 
-        {/* Generate My Plan Button - visible after 3+ exchanges */}
-        {messageCount.current >= 3 && !planGenerated && (
+        {/* Generate My Plan Button */}
+        {!planGenerated && (
           <div className="w-full flex justify-center mb-8">
             <button
               onClick={handleGeneratePlan}
