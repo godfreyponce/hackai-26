@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { AIAvatar } from "@/components/ai-avatar";
-import { Download, Loader2, ChevronRight, ChevronDown } from "lucide-react";
+import { Download, Loader2, ChevronRight, ChevronDown, Mic, MicOff, Square } from "lucide-react";
 import { DndBoard, Course } from "@/components/dnd-board";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -155,6 +155,11 @@ export default function SessionPage() {
             latestTranscript += event.results[i][0].transcript;
           }
 
+          // If the AI is currently speaking and user starts talking, interrupt the AI
+          if (isPlayingRef.current) {
+            stopAudio();
+          }
+
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
           silenceTimerRef.current = setTimeout(() => {
@@ -187,9 +192,23 @@ export default function SessionPage() {
     }
   }, []);
 
+  // Stop active audio playback (both ElevenLabs and Browser TTS)
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+    }
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    isPlayingRef.current = false;
+    setIsSpeaking(false);
+    setAdvisorStatus("listening");
+  }, []);
+
   const playAudio = async (text: string, onEnded?: () => void) => {
-    // Guard: don't interrupt ongoing playback
-    if (isPlayingRef.current) return;
+    // Guard: don't interrupt ongoing playback automatically, but stop it if manually requested
+    if (isPlayingRef.current) stopAudio();
     isPlayingRef.current = true;
 
     // Stop speech recognition so we don't pick up our own audio output
@@ -448,14 +467,17 @@ export default function SessionPage() {
   };
 
   const handleMicToggle = useCallback(() => {
-    if (isRecording && recognitionRef.current) {
-      recognitionRef.current.stop();
+    if (isRecording) {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch {}
+      }
       setIsRecording(false);
       setAdvisorStatus("idle");
     } else {
+      if (isPlayingRef.current) stopAudio();
       startListening();
     }
-  }, [isRecording]);
+  }, [isRecording, stopAudio]);
 
   const handleExportPlan = useCallback(() => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(columns, null, 2));
@@ -561,22 +583,47 @@ export default function SessionPage() {
              </div>
            )}
 
-           {/* Manual Mic Override if disabled */}
-           {advisorStatus === "idle" && !isLoading && (
+           {/* AI Controls */}
+           <div className="flex gap-4 mt-6">
+             {/* Mic Toggle Button */}
              <button 
                onClick={handleMicToggle}
-               className="mt-6 px-5 py-2.5 rounded-full border border-violet/20 flex items-center gap-2.5 hover:bg-violet/10 hover:border-violet text-muted-foreground transition-all shadow-sm"
-               >
-               <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
-               Tap to speak
+               className={`px-5 py-2.5 rounded-full border flex items-center gap-2.5 transition-all shadow-sm ${
+                 isRecording 
+                   ? "bg-red-500/10 border-red-500/50 hover:bg-red-500/20 text-red-500" 
+                   : "border-violet-500/20 hover:bg-violet-500/10 hover:border-violet-500 text-muted-foreground"
+               }`}
+             >
+               {isRecording ? (
+                 <>
+                   <Mic className="w-4 h-4" />
+                   Listening...
+                 </>
+               ) : (
+                 <>
+                   <MicOff className="w-4 h-4" />
+                   Tap to speak
+                 </>
+               )}
              </button>
-           )}
+
+             {/* Stop Speaking Button (Only visible when AI is speaking) */}
+             {isPlayingRef.current && (
+               <button 
+                 onClick={stopAudio}
+                 className="px-5 py-2.5 rounded-full border border-violet-500/20 bg-[#141428] hover:bg-violet-500/10 hover:border-violet-500 text-muted-foreground flex items-center gap-2.5 transition-all shadow-sm"
+               >
+                 <Square fill="currentColor" className="w-3.5 h-3.5" />
+                 Stop AI
+               </button>
+             )}
+           </div>
 
            {/* Generate My Plan Button */}
            <button
              onClick={handleGeneratePlan}
              disabled={isGeneratingPlan || isLoading}
-             className="mt-4 px-6 py-3 rounded-xl bg-violet-600/80 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm flex items-center gap-2.5 shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:shadow-[0_0_30px_rgba(139,92,246,0.5)] transition-all"
+             className="mt-6 px-6 py-3 rounded-xl bg-violet-600/80 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm flex items-center gap-2.5 shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:shadow-[0_0_30px_rgba(139,92,246,0.5)] transition-all"
            >
              {isGeneratingPlan ? (
                <><Loader2 className="w-4 h-4 animate-spin" /> Generating Plan...</>
