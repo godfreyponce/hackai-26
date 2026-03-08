@@ -341,6 +341,12 @@ export default function SessionPage() {
         };
 
         recognition.onerror = (event: any) => {
+          // Suppress expected/non-fatal errors
+          if (["aborted", "network", "no-speech"].includes(event.error)) {
+            setIsRecording(false);
+            setAdvisorStatus("idle");
+            return;
+          }
           console.error("Speech recognition error", event.error);
           setIsRecording(false);
           setAdvisorStatus("idle");
@@ -951,7 +957,7 @@ Be concise but thorough. Point out specific issues if any.`;
     setIsGettingFeedback(false);
   }, [columns, expectedGradDate, displayMajor, isGettingFeedback, isLoading, extractMinorFromChat]);
 
-  const buildColumnsFromPlan = (plan: {semesters: any[], graduation_semester: string, note?: string, prerequisite_chains?: Record<string, string[]>}) => {
+  const buildColumnsFromPlan = async (plan: {semesters: any[], graduation_semester: string, note?: string, prerequisite_chains?: Record<string, string[]>}) => {
     const newColumns: Record<string, any> = {};
 
     // Preserve all historical (past) semester columns
@@ -964,17 +970,41 @@ Be concise but thorough. Point out specific issues if any.`;
     // Preserve in-progress column
     newColumns.inProgress = columns.inProgress;
 
+    // Fetch enriched data from /api/nebula
+    const allCourseCodes = plan.semesters.flatMap((s: any) => (s.courses || []).map((c: any) => c.code));
+    let profResults: Record<string, any> = {};
+    if (allCourseCodes.length > 0) {
+      try {
+        const res = await fetch('/api/nebula', {
+          method: 'POST',
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ course_codes: allCourseCodes }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          profResults = data.results || {};
+        }
+      } catch (e) {
+        console.error("Failed to fetch from /api/nebula", e);
+      }
+    }
+
     plan.semesters.forEach((sem: any) => {
       const key = sem.semester.replace(/\s+/g, "_");
-      const courses = (sem.courses || []).map((c: any) => ({
-        id: `${c.code}-${Math.random().toString(36).substr(2, 9)}`,
-        code: c.code,
-        title: c.title || c.code,
-        professor: "Loading...",
-        badge: "Degree Plan" as const,
-        whyText: c.reason || "Part of your degree plan.",
-        credits: c.credits || 3,
-      }));
+      const courses = (sem.courses || []).map((c: any) => {
+        const pData = profResults[c.code];
+        const profName = pData && pData.professor ? (pData.display || pData.professor) : "TBD";
+        return {
+          id: `${c.code}-${Math.random().toString(36).substr(2, 9)}`,
+          code: c.code,
+          title: c.title || c.code,
+          professor: profName,
+          badge: "Degree Plan" as const,
+          whyText: c.reason || "Part of your degree plan.",
+          credits: c.credits || 3,
+          aRate: pData?.a_rate,
+        };
+      });
       const totalCredits = courses.reduce((sum: number, c: any) => sum + (c.credits || 3), 0);
 
       newColumns[key] = {
@@ -1006,11 +1036,6 @@ Be concise but thorough. Point out specific issues if any.`;
     if (plan.graduation_semester && plan.graduation_semester !== "Unknown") {
       setExpectedGradDate(plan.graduation_semester);
     }
-
-    // Fetch professor data for every planned course using bulk endpoint (single request)
-    const allCourseCodes = plan.semesters.flatMap((s: any) => (s.courses || []).map((c: any) => c.code));
-    // Single bulk request is much faster than individual parallel calls
-    fetchBulkProfessors(allCourseCodes);
   };
 
   const handleGeneratePlan = async () => {
@@ -1048,7 +1073,7 @@ Be concise but thorough. Point out specific issues if any.`;
       if (res.ok) {
         const plan = await res.json();
         if (plan.semesters && plan.semesters.length > 0) {
-          buildColumnsFromPlan(plan);
+          await buildColumnsFromPlan(plan);
           const noteText = plan.note ? ` ${plan.note}` : "";
           const accelMsg = earlyGradMode && plan.acceleration_possible === false
             ? " Early graduation isn't feasible with your remaining requirements."
@@ -1106,6 +1131,28 @@ Be concise but thorough. Point out specific issues if any.`;
       )}
 
       <div className="max-w-7xl mx-auto w-full flex flex-col items-center">
+
+        {/* End Session Button pinned to Navbar right corner */}
+        {!sessionEnded && (
+          <button
+            onClick={() => {
+              if (recognitionRef.current) {
+                try { recognitionRef.current.abort(); } catch {}
+              }
+              if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.src = "";
+              }
+              setIsRecording(false);
+              setIsSpeaking(false);
+              setAdvisorStatus("idle");
+              setSessionEnded(true);
+            }}
+            className="fixed top-3 right-6 z-[60] px-5 py-2.5 rounded-full border border-[#7B2FBE] text-[#F5F5FF] bg-transparent hover:bg-[#7B2FBE] transition-colors font-semibold text-sm"
+          >
+            End Session
+          </button>
+        )}
 
         {/* Top Center: Voice Avatar */}
         <div className="flex flex-col items-center mb-8 relative">
@@ -1220,12 +1267,14 @@ Be concise but thorough. Point out specific issues if any.`;
       </div>
 
       {/* Floating Export Button */}
-      <div className="fixed bottom-12 right-12 transition-all duration-500 z-50">
-         <button onClick={handleExportPlan} className="px-6 py-4 rounded-xl bg-orange text-foreground font-[var(--font-heading)] font-semibold text-lg flex items-center gap-3 shadow-[0_0_30px_rgba(232,119,34,0.3)] hover:scale-105 transition-all">
-           <Download className="w-5 h-5" />
-           Export Final Plan
-         </button>
-      </div>
+      {sessionEnded && (
+        <div className="fixed bottom-12 right-12 transition-all duration-500 z-50 animate-in fade-in zoom-in slide-in-from-bottom-8">
+           <button onClick={handleExportPlan} className="px-6 py-4 rounded-xl bg-orange text-foreground font-[var(--font-heading)] font-semibold text-lg flex items-center gap-3 shadow-[0_0_30px_rgba(232,119,34,0.3)] hover:scale-105 transition-all">
+             <Download className="w-5 h-5" />
+             Export Final Plan
+           </button>
+        </div>
+      )}
 
     </div>
   );

@@ -43,7 +43,7 @@ RE_STUDENT_ID = re.compile(r"Student\s*ID\s*:\s*(\d+)", re.IGNORECASE)
 
 # Major: "Computer Science Major CIP: 11.0101" or "Computer Science Major"
 RE_MAJOR = re.compile(
-    r":\s*(.+?)\s+Major(?:\s+CIP)?",
+    r"(?<=[^\w])([A-Za-z\s,-]+)\s+Major(?:\s+CIP)?",
     re.IGNORECASE,
 )
 
@@ -303,7 +303,7 @@ class TranscriptParser:
                 dept, num, name, attempted, earned, grade, points = course_match.groups()
                 code = f"{dept} {num}"
                 credit_hours = float(attempted)  # Use attempted hours as credit value
-                semester_label = current_semester or "Unknown"
+                semester_label = str(current_semester) if current_semester else "Unknown"
 
                 # Tag transfer courses
                 if in_transfer_section:
@@ -326,7 +326,7 @@ class TranscriptParser:
             if ip_match:
                 dept, num, name, attempted = ip_match.groups()
                 code = f"{dept} {num}"
-                semester_label = current_semester or "Current"
+                semester_label = str(current_semester) if current_semester else "Current"
                 key = (code, semester_label)
                 if key not in seen:
                     seen.add(key)

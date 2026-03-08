@@ -498,7 +498,7 @@ MINOR_PLANS: dict[str, dict] = {
 }
 
 
-def get_minor_plan(minor_name: str) -> dict | None:
+def get_minor_plan(minor_name: str) -> Optional[dict]:
     """
     Look up a minor plan by name. Case-insensitive, handles common abbreviations.
     Returns None for unknown minors — caller should fall back to LLM judgment.

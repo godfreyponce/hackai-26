@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Nebula Labs API client.
 Docs: https://api.utdnebula.com/swagger/index.html
@@ -66,7 +67,7 @@ def _parse_credits(credit_hours_str: str) -> int:
     return int(match.group(1)) if match else 3
 
 
-def _parse_prereqs(prereqs_obj: dict | None) -> list[str]:
+def _parse_prereqs(prereqs_obj: Optional[dict]) -> list[str]:
     """
     Flatten Nebula's nested prerequisites CollectionRequirement into a simple list of course ID strings.
 
@@ -398,7 +399,7 @@ async def _fetch_professor_with_grades(
     )
 
 
-async def get_best_professor(subject: str, course_number: str) -> dict | None:
+async def get_best_professor(subject: str, course_number: str) -> Optional[dict]:
     """
     Get the best professor for a course based on A-rate.
 
